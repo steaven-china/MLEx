@@ -1,0 +1,41 @@
+{
+  "name": "mlex-agent",
+  "version": "0.1.0",
+  "description": "Partitioned memory agent with hybrid retrieval and CLI",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "mlex": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/cli/index.ts chat",
+    "web": "tsx src/cli/index.ts web",
+    "acceptance": "tsx src/tools/acceptance.ts",
+    "verify:arch": "npm run typecheck && npm test && npm run build && npm run acceptance",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "agent",
+    "memory",
+    "cli",
+    "typescript"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "commander": "^14.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.2",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

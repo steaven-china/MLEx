@@ -1,0 +1,69 @@
+import type { MemoryEvent } from "../../types.js";
+import { extractKeywords } from "../../utils/text.js";
+import type { IEmbedder } from "../embedder/IEmbedder.js";
+import type { IHistoryMatchCalculator } from "../management/HistoryMatchCalculator.js";
+import type { RetentionPolicyEngine } from "../management/RetentionPolicyEngine.js";
+import type { IRawEventStore } from "../raw/IRawEventStore.js";
+import type { ISummarizer } from "../summarizer/ISummarizer.js";
+import type { MemoryBlock } from "../MemoryBlock.js";
+
+export interface SealProcessorDeps {
+  summarizer: ISummarizer;
+  embedder: IEmbedder;
+  rawStore: IRawEventStore;
+  historyMatchCalculator: IHistoryMatchCalculator;
+  retentionPolicy: RetentionPolicyEngine;
+}
+
+export interface SealProcessResult {
+  block: MemoryBlock;
+  matchScore: number;
+  retentionReason: string;
+  bestMatchId?: string;
+}
+
+export class SealProcessor {
+  constructor(private readonly deps: SealProcessorDeps) {}
+
+  async process(block: MemoryBlock, history: MemoryBlock[]): Promise<SealProcessResult> {
+    const summary = this.generateSummary(block.rawEvents);
+    block.summary = summary;
+    block.keywords = this.extractKeywords(`${summary} ${joinEventText(block.rawEvents)}`);
+    block.embedding = this.embed(summary);
+
+    const matchResult = this.deps.historyMatchCalculator.calculate(block, history);
+    block.matchScore = matchResult.score;
+
+    const decision = this.deps.retentionPolicy.decide({
+      block,
+      matchScore: matchResult.score,
+      directionalAffinity: matchResult.directionalAffinity,
+      noveltyScore: matchResult.noveltyScore,
+      relationBoost: matchResult.relationBoost
+    });
+    await decision.action.apply(block, this.deps.rawStore);
+
+    return {
+      block,
+      matchScore: matchResult.score,
+      retentionReason: decision.reason,
+      bestMatchId: matchResult.bestMatchId
+    };
+  }
+
+  private generateSummary(events: MemoryEvent[]): string {
+    return this.deps.summarizer.summarize(events);
+  }
+
+  private extractKeywords(text: string): string[] {
+    return extractKeywords(text, 8);
+  }
+
+  private embed(text: string): number[] {
+    return this.deps.embedder.embed(text);
+  }
+}
+
+function joinEventText(events: MemoryEvent[]): string {
+  return events.map((event) => event.text).join(" ");
+}
