@@ -31,6 +31,13 @@ export interface ComponentConfig {
   relationStoreBackend: "memory" | "file" | "sqlite";
   relationStoreFilePath: string;
   graphEmbeddingMethod: "node2vec" | "transe";
+  searchProvider: "http";
+  searchEndpoint?: string;
+  searchApiKey?: string;
+  webFetchEndpoint?: string;
+  webFetchApiKey?: string;
+  searchSeedQueries: string[];
+  searchTimeoutMs: number;
   webDebugApiEnabled: boolean;
   webFileApiEnabled: boolean;
   webExposeRawContext: boolean;
@@ -67,6 +74,7 @@ export const DEFAULT_MANAGER_CONFIG: ManagerConfig = {
   keywordWeight: 0.45,
   vectorWeight: 0.55,
   graphWeight: 0.3,
+  vectorMinScore: 0.2,
   compressionHighMatchThreshold: 0.82,
   compressionLowMatchThreshold: 0.35,
   compressionSoftBand: 0.08,
@@ -78,7 +86,10 @@ export const DEFAULT_MANAGER_CONFIG: ManagerConfig = {
   predictionWalkDepth: 2,
   predictionActiveThreshold: 0.45,
   predictionTransitionDecay: 0.75,
-  predictionBoostWeight: 0.25
+  predictionBoostWeight: 0.25,
+  searchAugmentMode: "lazy",
+  searchScheduleMinutes: 30,
+  searchTopK: 5
 };
 
 export function loadConfig(overrides: DeepPartial<AppConfig> = {}): AppConfig {
@@ -127,6 +138,7 @@ export function loadConfig(overrides: DeepPartial<AppConfig> = {}): AppConfig {
     keywordWeight: parseEnvFloat("MLEX_KEYWORD_WEIGHT", DEFAULT_MANAGER_CONFIG.keywordWeight),
     vectorWeight: parseEnvFloat("MLEX_VECTOR_WEIGHT", DEFAULT_MANAGER_CONFIG.vectorWeight),
     graphWeight: parseEnvFloat("MLEX_GRAPH_WEIGHT", DEFAULT_MANAGER_CONFIG.graphWeight),
+    vectorMinScore: parseEnvFloat("MLEX_VECTOR_MIN_SCORE", DEFAULT_MANAGER_CONFIG.vectorMinScore),
     compressionHighMatchThreshold: parseEnvFloat(
       "MLEX_COMPRESS_HIGH_MATCH",
       DEFAULT_MANAGER_CONFIG.compressionHighMatchThreshold
@@ -167,6 +179,14 @@ export function loadConfig(overrides: DeepPartial<AppConfig> = {}): AppConfig {
       "MLEX_PREDICTION_BOOST_WEIGHT",
       DEFAULT_MANAGER_CONFIG.predictionBoostWeight
     ),
+    searchAugmentMode:
+      (process.env.MLEX_SEARCH_AUGMENT_MODE as ManagerConfig["searchAugmentMode"]) ??
+      DEFAULT_MANAGER_CONFIG.searchAugmentMode,
+    searchScheduleMinutes: parseEnvNumber(
+      "MLEX_SEARCH_SCHEDULE_MINUTES",
+      DEFAULT_MANAGER_CONFIG.searchScheduleMinutes
+    ),
+    searchTopK: parseEnvNumber("MLEX_SEARCH_TOPK", DEFAULT_MANAGER_CONFIG.searchTopK),
     enableRelationExpansion:
       (process.env.MLEX_RELATION_EXPAND ?? "true").toLowerCase() !== "false"
   };
@@ -196,6 +216,13 @@ export function loadConfig(overrides: DeepPartial<AppConfig> = {}): AppConfig {
     graphEmbeddingMethod:
       (process.env.MLEX_GRAPH_EMBEDDING_METHOD as ComponentConfig["graphEmbeddingMethod"]) ??
       "node2vec",
+    searchProvider: "http",
+    searchEndpoint: process.env.MLEX_SEARCH_ENDPOINT,
+    searchApiKey: process.env.MLEX_SEARCH_API_KEY,
+    webFetchEndpoint: process.env.MLEX_WEB_FETCH_ENDPOINT,
+    webFetchApiKey: process.env.MLEX_WEB_FETCH_API_KEY,
+    searchSeedQueries: parseEnvCsv("MLEX_SEARCH_SEED_QUERIES"),
+    searchTimeoutMs: parseEnvNumber("MLEX_SEARCH_TIMEOUT_MS", 15000),
     webDebugApiEnabled:
       (process.env.MLEX_WEB_DEBUG_API_ENABLED ?? "false").toLowerCase() === "true",
     webFileApiEnabled:
@@ -224,6 +251,15 @@ function parseEnvFloat(name: string, defaultValue: number): number {
   if (!value) return defaultValue;
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : defaultValue;
+}
+
+function parseEnvCsv(name: string): string[] {
+  const raw = process.env[name];
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
 }
 
 function deepMerge<T extends Record<string, unknown>>(base: T, overrides: DeepPartial<T>): T {

@@ -49,6 +49,9 @@ import { SQLiteBlockStore } from "./memory/store/SQLiteBlockStore.js";
 import { HeuristicSummarizer } from "./memory/summarizer/HeuristicSummarizer.js";
 import { BlockStoreVectorStore } from "./memory/vector/BlockStoreVectorStore.js";
 import { InMemoryVectorStore } from "./memory/vector/InMemoryVectorStore.js";
+import { HttpSearchProvider } from "./search/HttpSearchProvider.js";
+import { HttpWebPageFetcher } from "./search/HttpWebPageFetcher.js";
+import { SearchIngestScheduler } from "./search/SearchIngestScheduler.js";
 
 type Factory<T> = () => T;
 
@@ -178,7 +181,11 @@ export function createRuntime(
     );
   });
   container.register("vectorRetriever", () => {
-    return new VectorRetriever(container.resolve("vectorStore"), container.resolve("blockStore"));
+    return new VectorRetriever(
+      container.resolve("vectorStore"),
+      container.resolve("blockStore"),
+      Math.max(-1, Math.min(1, config.manager.vectorMinScore))
+    );
   });
   container.register("graphRetriever", () => {
     return new GraphRetriever(
@@ -228,11 +235,40 @@ export function createRuntime(
     });
   });
   container.register("provider", () => buildProvider(config, container.resolve("debugTraceRecorder")));
+  container.register("searchProvider", () => {
+    return new HttpSearchProvider({
+      endpoint: config.component.searchEndpoint,
+      apiKey: config.component.searchApiKey,
+      providerName: "http",
+      timeoutMs: Math.max(1000, config.component.searchTimeoutMs)
+    });
+  });
+  container.register("webPageFetcher", () => {
+    return new HttpWebPageFetcher({
+      endpoint: config.component.webFetchEndpoint,
+      apiKey: config.component.webFetchApiKey,
+      timeoutMs: Math.max(1000, config.component.searchTimeoutMs)
+    });
+  });
+  container.register("searchScheduler", () => {
+    return new SearchIngestScheduler({
+      memoryManager: container.resolve("memoryManager"),
+      searchProvider: container.resolve("searchProvider"),
+      enabled: config.manager.searchAugmentMode === "scheduled",
+      intervalMinutes: Math.max(1, config.manager.searchScheduleMinutes),
+      seeds: config.component.searchSeedQueries,
+      topK: Math.max(1, config.manager.searchTopK)
+    });
+  });
   container.register("toolExecutor", () => {
     return new BuiltinAgentToolExecutor({
       workspaceRoot: process.cwd(),
       memoryManager: container.resolve("memoryManager"),
-      traceRecorder: container.resolve("debugTraceRecorder")
+      traceRecorder: container.resolve("debugTraceRecorder"),
+      searchProvider: container.resolve("searchProvider"),
+      webPageFetcher: container.resolve("webPageFetcher"),
+      searchAugmentMode: config.manager.searchAugmentMode,
+      searchTopK: config.manager.searchTopK
     });
   });
   container.register("agent", () => {
@@ -251,11 +287,14 @@ export function createRuntime(
   const agent = container.resolve<Agent>("agent");
   const memoryManager = container.resolve<PartitionMemoryManager>("memoryManager");
   let closed = false;
+  const scheduler = container.resolve<SearchIngestScheduler>("searchScheduler");
+  scheduler.start();
 
   const close = async (): Promise<void> => {
     if (closed) return;
     closed = true;
 
+    await scheduler.stop();
     await memoryManager.flushAsyncRelations();
     if (sqliteDatabase) {
       sqliteDatabase.close();

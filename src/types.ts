@@ -63,6 +63,8 @@ export interface DirectionalIntent {
   depth: number;
 }
 
+export type SearchAugmentMode = "lazy" | "auto" | "scheduled";
+
 export interface ManagerConfig {
   maxTokensPerBlock: number;
   minTokensPerBlock: number;
@@ -79,6 +81,7 @@ export interface ManagerConfig {
   keywordWeight: number;
   vectorWeight: number;
   graphWeight: number;
+  vectorMinScore: number;
   compressionHighMatchThreshold: number;
   compressionLowMatchThreshold: number;
   compressionSoftBand: number;
@@ -91,4 +94,7 @@ export interface ManagerConfig {
   predictionActiveThreshold: number;
   predictionTransitionDecay: number;
   predictionBoostWeight: number;
+  searchAugmentMode: SearchAugmentMode;
+  searchScheduleMinutes: number;
+  searchTopK: number;
 }

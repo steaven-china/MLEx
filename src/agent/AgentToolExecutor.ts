@@ -3,6 +3,10 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { IDebugTraceRecorder } from "../debug/DebugTraceRecorder.js";
 import { ReadonlyFileService } from "../files/ReadonlyFileService.js";
 import type { IMemoryManager } from "../memory/IMemoryManager.js";
+import type { SearchAugmentMode } from "../types.js";
+import type { ISearchProvider, SearchRecord } from "../search/ISearchProvider.js";
+import type { IWebPageFetcher } from "../search/IWebPageFetcher.js";
+import { createId } from "../utils/id.js";
 
 export interface AgentToolCall {
   name: string;
@@ -24,6 +28,10 @@ export interface BuiltinAgentToolExecutorConfig {
   memoryManager: IMemoryManager;
   traceRecorder?: IDebugTraceRecorder;
   testRunTimeoutMs?: number;
+  searchProvider?: ISearchProvider;
+  webPageFetcher?: IWebPageFetcher;
+  searchAugmentMode?: SearchAugmentMode;
+  searchTopK?: number;
 }
 
 export class BuiltinAgentToolExecutor implements IAgentToolExecutor {
@@ -38,12 +46,16 @@ export class BuiltinAgentToolExecutor implements IAgentToolExecutor {
     return [
       "You can call tools when needed.",
       "If a tool is needed, output ONLY one tag: <tool_call>{\"name\":\"...\",\"args\":{...}}</tool_call>.",
+      "When information is incomplete, prefer calling history.query before answering.",
       "Supported tools:",
       "- readonly.list args: {\"path\":\".\",\"maxEntries\":200}",
       "- readonly.read args: {\"path\":\"README.md\",\"maxBytes\":65536}",
-      "- history.query args: {\"query\":\"payment webhook\", \"topBlocks\":5, \"includeRaw\":true, \"includeRecent\":true}",
+      "- history.query args: {\"query\":\"payment webhook\",\"mode\":\"hybrid\",\"topBlocks\":5,\"limit\":5,\"keywords\":[\"idempotency\"],\"includeRaw\":true,\"includeRecent\":true,\"includePrediction\":true,\"maxFormattedChars\":16384}",
+      "- web.search.record args: {\"query\":\"latest payment retry best practices\",\"limit\":5,\"includeSnippets\":true}",
+      "- web.fetch.record args: {\"url\":\"https://example.com/doc\",\"maxChars\":12000}",
       "- test.run args: {\"script\":\"typecheck|test|build|verify:arch\"}",
       "After a tool call, you will receive TOOL_RESULT JSON in a user message.",
+      "You may call tools again in later rounds if needed, but only one tool_call per round.",
       "When no more tools are needed, return normal final answer text."
     ].join("\n");
   }
@@ -157,12 +169,19 @@ export class BuiltinAgentToolExecutor implements IAgentToolExecutor {
         this.config.traceRecorder?.record("tool", "execute.result", { call, result });
         return result;
       }
-      const topBlocks = clampInt(call.args.topBlocks, 5, 1, 50);
+      const mode = asHistoryQueryMode(call.args.mode);
+      const topBlocks = clampInt(call.args.topBlocks ?? call.args.limit, 5, 1, 50);
       const includeRaw = asBoolean(call.args.includeRaw, true);
       const includeRecent = asBoolean(call.args.includeRecent, true);
+      const includePrediction = asBoolean(call.args.includePrediction, true);
       const maxFormattedChars = clampInt(call.args.maxFormattedChars, 16 * 1024, 256, 64 * 1024);
+      const keywords = asStringArray(call.args.keywords);
 
-      const context = await this.config.memoryManager.getContext(query);
+      const finalQuery = keywords.length > 0 ? `${query} ${keywords.join(" ")}` : query;
+      if (this.config.searchAugmentMode === "auto") {
+        await this.searchAndRecord(finalQuery, this.config.searchTopK ?? 5);
+      }
+      const context = await this.config.memoryManager.getContext(finalQuery);
       const selectedBlocks = context.blocks.slice(0, topBlocks).map((block) => ({
         id: block.id,
         score: block.score,
@@ -178,17 +197,109 @@ export class BuiltinAgentToolExecutor implements IAgentToolExecutor {
         rawEvents: includeRaw ? (block.rawEvents ?? []) : undefined
       }));
 
+      const formatted = truncateText(context.formatted, maxFormattedChars);
       const result = {
         ok: true,
         content: JSON.stringify(
           {
             query,
+            queryMeta: {
+              mode,
+              topBlocks,
+              includeRaw,
+              includeRecent,
+              includePrediction,
+              maxFormattedChars,
+              keywords,
+              effectiveQuery: finalQuery
+            },
             blockCount: context.blocks.length,
             recentEventCount: context.recentEvents.length,
             blocks: selectedBlocks,
             recentEvents: includeRecent ? context.recentEvents : [],
-            formatted: truncateText(context.formatted, maxFormattedChars),
-            prediction: context.prediction ?? null
+            formatted,
+            truncated: formatted !== context.formatted,
+            prediction: includePrediction ? (context.prediction ?? null) : null
+          },
+          null,
+          2
+        )
+      };
+      this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+      return result;
+    }
+
+    if (call.name === "web.search.record") {
+      const query = asString(call.args.query);
+      if (!query) {
+        const result = { ok: false, content: "web.search.record requires args.query" };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      const limit = clampInt(call.args.limit, this.config.searchTopK ?? 5, 1, 10);
+      const includeSnippets = asBoolean(call.args.includeSnippets, true);
+      const records = await this.searchAndRecord(query, limit);
+      const output = records.map((item) => ({
+        rank: item.rank,
+        title: item.title,
+        url: item.url,
+        source: item.source,
+        snippet: includeSnippets ? item.snippet : undefined,
+        fetchedAt: item.fetchedAt
+      }));
+      const result = {
+        ok: true,
+        content: JSON.stringify(
+          {
+            query,
+            count: output.length,
+            records: output
+          },
+          null,
+          2
+        )
+      };
+      this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+      return result;
+    }
+
+    if (call.name === "web.fetch.record") {
+      const url = asString(call.args.url);
+      if (!url) {
+        const result = { ok: false, content: "web.fetch.record requires args.url" };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      if (!this.config.webPageFetcher) {
+        const result = { ok: false, content: "web.fetch.record is not configured" };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      const maxChars = clampInt(call.args.maxChars, 12_000, 256, 120_000);
+      const page = await this.config.webPageFetcher.fetch(url);
+      const content = truncateText(page.content, maxChars);
+      await this.config.memoryManager.addEvent({
+        id: createId("event"),
+        role: "tool",
+        text: `web fetch\nurl: ${page.url}\ntitle: ${page.title ?? ""}\n${content}`.trim(),
+        timestamp: Date.now(),
+        metadata: {
+          tool: "web.fetch.record",
+          url: page.url,
+          title: page.title,
+          fetchedAt: page.fetchedAt,
+          truncated: content !== page.content
+        }
+      });
+      const result = {
+        ok: true,
+        content: JSON.stringify(
+          {
+            url: page.url,
+            title: page.title ?? null,
+            content,
+            truncated: content !== page.content,
+            fetchedAt: page.fetchedAt
           },
           null,
           2
@@ -204,6 +315,33 @@ export class BuiltinAgentToolExecutor implements IAgentToolExecutor {
     };
     this.config.traceRecorder?.record("tool", "execute.result", { call, result });
     return result;
+  }
+
+  private async searchAndRecord(query: string, limit: number): Promise<SearchRecord[]> {
+    if (!this.config.searchProvider) return [];
+
+    const records = await this.config.searchProvider.search({ query, limit });
+    if (records.length === 0) return [];
+
+    const summary = records
+      .map((item) => `${item.rank}. ${item.title} | ${item.url} | ${item.snippet}`)
+      .join("\n");
+
+    await this.config.memoryManager.addEvent({
+      id: createId("event"),
+      role: "tool",
+      text: `web search: ${query}\n${summary}`,
+      timestamp: Date.now(),
+      metadata: {
+        tool: "web.search.record",
+        mode: this.config.searchAugmentMode ?? "lazy",
+        query,
+        count: records.length,
+        records
+      }
+    });
+
+    return records;
   }
 }
 
@@ -337,6 +475,23 @@ function clampInt(
 function truncateText(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n...[truncated]`;
+}
+
+type HistoryQueryMode = "hybrid" | "recent" | "semantic";
+
+function asHistoryQueryMode(value: unknown): HistoryQueryMode {
+  const parsed = asString(value)?.toLowerCase();
+  if (parsed === "recent" || parsed === "semantic") {
+    return parsed;
+  }
+  return "hybrid";
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => asString(item))
+    .filter((item): item is string => Boolean(item));
 }
 
 function extractCandidateJsonPayloads(text: string): string[] {

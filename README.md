@@ -1,55 +1,97 @@
-# MLEX Agent (Node.js + TypeScript)
+# MLEX Agent
 
-一个基于你给出的分块记忆架构实现的可运行项目，包含：
+MLEX 是一个面向高上下文 Agent 的分块记忆引擎与可运行 CLI/Web 项目。
+核心目标是把“记忆处理、关系抽取、预测检索、输出组装”拆成可替换模块，便于演进和实验。
 
-- `PartitionMemoryManager`（分块、封存、摘要、关键词/向量索引）
-- `PartitionMemoryManager`（支持主动触发 seal：角色切换边界/空闲超时）
-- 混合检索（关键词 + 向量 + 关系图扩展〔relation confidence + depth decay 加权〕+ 融合重排）
-- 异步关系抽取队列
-- 历史匹配计算 + 指向性感知保留策略（Compress/KeepRaw/Conflict）
-- 原文存储与回溯（RawEventStore + Backtracker）
-- 预测引擎（图嵌入 + 加权随机游走 + 意图解码）
-- 主动触发门控（冷却窗口 + 时间分段策略 + 预测熵 + top1-top2 margin + 语义相似度二次验证）
-- 主动预取路径（prefetch 预热下一轮检索分数，非即时注入）
-- 压缩策略软决策（阈值软区间 + 指向性/新颖度/关系信号联合决策）
-- 存储抽象（InMemory / SQLite / Chroma 适配 / Lance 文件适配）
-- 可替换 LLM Provider（`rule-based` / `openai` / `deepseek-reasoner`）
-- 可直接运行的 CLI Agent（`mlex chat`）
-- 简约风 Web 前端（`mlex web`）
+## 核心能力
 
-## 1) 快速开始
+- 分块记忆与封存：`PartitionMemoryManager` + 可切换 chunk 策略（`fixed|semantic|hybrid`）
+- 混合检索：关键词 + 向量（ANN 候选召回）+ 关系图扩展 + 融合重排
+- 关系抽取：启发式或 LLM 抽取，异步入队
+- 保留策略：`raw/compressed/conflict` 决策与原文回溯
+- 预测引擎：图嵌入 + 随机游走 + 主动触发门控 + prefetch
+- 存储抽象：`memory/sqlite/lance/chroma`（块存储）+ 可独立 raw/relation store
+- Provider 可替换：`rule-based` / `openai` / `deepseek-reasoner`
+- 外部搜索增强：支持 `lazy|auto|scheduled` 三种模式（搜索摘要入库 + 网页正文懒抓取）
+- 运行形态：CLI（`chat/ask/ingest/swarm/files:*`）+ Web（SSE 流式）
 
-```bash
+## 运行要求
+
+- Node.js `>=20`（推荐 `22+`）
+- npm `>=10`
+- 默认后端是 `sqlite`，需要运行时支持 `node:sqlite`
+
+如果当前 Node 运行时不支持 `node:sqlite`，请改用：
+
+- `--storage-backend memory`
+- 或 `--storage-backend lance`
+- 或升级到支持 `node:sqlite` 的 Node 版本
+
+## 快速开始（PowerShell）
+
+```powershell
 npm install
 npm run build
-npx mlex chat
+npx mlex chat --provider rule-based
 ```
 
 开发模式：
 
-```bash
+```powershell
 npm run dev
 ```
 
-前端模式：
+Web 模式：
 
-```bash
+```powershell
 npm run web
 ```
 
-## 2) CLI
+## 脚本说明
 
-### 交互式对话
+| Script | 说明 |
+| --- | --- |
+| `npm run typecheck` | TypeScript 类型检查 |
+| `npm test` | 运行 Vitest 单元/集成测试 |
+| `npm run build` | `tsup` 构建 `dist/` |
+| `npm run acceptance` | Web 端到端验收（含持久化与流式检查） |
+| `npm run verify:arch` | 依次执行 `typecheck -> test -> build -> acceptance` |
 
-```bash
+## CLI 命令总览
+
+| 命令 | 说明 | 示例 |
+| --- | --- | --- |
+| `mlex chat` | 交互式会话 | `npx mlex chat --provider openai --stream` |
+| `mlex web` | 启动 Web UI + API | `npx mlex web --port 8787` |
+| `mlex ask` | 单次提问 | `npx mlex ask "总结当前记忆架构"` |
+| `mlex ingest <file>` | 导入文本并写入记忆块 | `npx mlex ingest .\docs\notes.md` |
+| `mlex swarm` | 多 Agent 协作汇总 | `npx mlex swarm "给出上线方案" --agents 3` |
+| `mlex files:list` | 只读列目录 | `npx mlex files:list .` |
+| `mlex files:read` | 只读读文件 | `npx mlex files:read README.md --max-bytes 2048` |
+
+## `mlex chat`
+
+示例：
+
+```powershell
 npx mlex chat --provider rule-based
 ```
 
-可选参数：
+`chat` 已升级为全屏 TUI（基于 `blessed`），默认布局为：
+
+- 左侧 Sessions：会话轨（支持多会话切换）
+- 中间 Session：当前会话实时对话流
+- 右侧上半 Activity：操作轨迹/状态日志
+- 右侧下半 Inspector：上下文/配置/trace/文件查看
+- 底部 Prompt：输入区
+- 默认深色低亮主题，且启用 `fullUnicode` + `forceUnicode`（支持 CJK/emoji/组合字符）
+- 流式模式下，assistant 回复会在 Session 面板中实时增长（即时对话体验）
+
+常用参数：
 
 - `--provider rule-based|openai|deepseek-reasoner`
-- `--model <model>`（openai/deepseek 均可用）
-- `--stream`（OpenAI/任意 provider 流式打印）
+- `--model <model>`
+- `--stream`
 - `--max-tokens <number>`
 - `--chunk-strategy fixed|semantic|hybrid`
 - `--storage-backend memory|sqlite|lance|chroma`
@@ -64,166 +106,164 @@ npx mlex chat --provider rule-based
 - `--graph-embedding node2vec|transe`
 - `--relation-extractor heuristic|openai|deepseek`
 - `--relation-model <model>`
+- `--search-endpoint <url>`
+- `--search-api-key <key>`
+- `--web-fetch-endpoint <url>`
+- `--web-fetch-api-key <key>`
+- `--search-mode lazy|auto|scheduled`
+- `--search-schedule-minutes <number>`
+- `--search-topk <number>`
+- `--search-seeds <csv>`
 - `--prediction true|false`
 - `--show-context`
+- `--debug-trace true|false`
+- `--debug-trace-max <number>`
 
-会话内命令：
+TUI 输入命令（在底部输入框）：
 
+- `/help`：查看命令与快捷键帮助（右侧 Inspector 显示）
+- `/new` 或 `/clear`：创建新会话
+- `/resend` 或 `/retry`：重发上一条用户消息
+- `/stop`：打断当前流式回复
+- `/mode <chat|code|plan>`：切换工作模式标签
 - `/seal`：封存当前 active block
-- `/ctx <query>`：查看某查询的检索上下文
-- `/config`：打印当前配置
-- `/trace [n]`：查看最近 n 条完整调用 trace（模型请求/响应、Agent轮次、工具调用）
+- `/ctx <query>`：查看检索上下文
+- `/config`：输出当前配置（敏感字段脱敏）
+- `/trace [n]`：查看 trace
 - `/trace-clear`：清空 trace
-- `/ml`：进入多行输入（`/end` 提交，`/cancel` 取消）
-- `/ls [path]` 或 `/list [path]`：只读列目录
-- `/cat <file>` 或 `/read <file>`：只读读取文件内容（默认最多 64KB）
-- `/exit`：退出
+- `/ls [path]` 或 `/list [path]`
+- `/cat <file>` 或 `/read <file>`
+- `/exit`
 
-直接粘贴多行文本时，CLI 会自动合并为一条消息发送（无需先输入 `/ml`）。
+TUI 快捷键：
 
-Agent 也可在回答过程中自主触发工具调用（模型输出 `<tool_call>...</tool_call>` 协议）：
+- `Ctrl+1` / `Ctrl+2` / `Ctrl+3`：切换 `chat/code/plan` 模式
+- `Ctrl+K`：打开 Quick Palette
+- `Ctrl+N`：新建会话
+- `Ctrl+R`：重发上一条消息（流式中会先打断再重发）
+- `Ctrl+X`：打断当前流式回复
+- `Ctrl+S`：快速 seal
+- `Ctrl+P`：切换 streaming 开关
+- `Ctrl+T`：打开 trace 面板
+- `Ctrl+L`：清空当前会话消息
+- `Ctrl+E`：打开外部编辑器输入多行文本
+- `Tab`：切换 `Prompt -> Sessions -> Session -> Activity -> Inspector` 焦点
+- `Ctrl+C`：退出 TUI
 
-- `readonly.list`：只读列目录
-- `readonly.read`：只读读文件
-- `history.query`：查询对话记录上下文（blocks/recentEvents/prediction）
-- `test.run`：运行白名单脚本（`typecheck` / `test` / `build` / `verify:arch`）
+## 搜索增强（lazy / auto / scheduled）
 
-默认优先读取 `AgentDocs/AGENT.md` 并注入到系统提示中作为运行约束（兼容回退到工作目录向上的 `AGENTS.md`）。
+MLEX 支持在回答流程中调用外部搜索并把结果作为 `tool` 事件写入 memory，后续可被 `history.query` 命中。
 
-当数据库暂无可检索历史块时，会自动注入 `AgentDocs/Introduction.md` 作为冷启动引导。
+- `lazy`：仅在模型调用 `web.search.record` 时触发搜索
+- `auto`：每次 `history.query` 前自动搜索并入库
+- `scheduled`：运行时按固定间隔执行种子 queries 并入库
 
-主动 seal 可通过环境变量调整：`MLEX_PROACTIVE_SEAL_ENABLED`、`MLEX_PROACTIVE_SEAL_IDLE_SECONDS`、`MLEX_PROACTIVE_SEAL_TURN_BOUNDARY`、`MLEX_PROACTIVE_SEAL_MIN_TOKENS`。
+CLI 示例：
 
-压缩决策可通过环境变量调整：`MLEX_COMPRESS_HIGH_MATCH`、`MLEX_COMPRESS_LOW_MATCH`、`MLEX_COMPRESS_SOFT_BAND`、`MLEX_COMPRESS_PRESERVE_WEIGHT`、`MLEX_COMPRESS_MIN_RAW_TOKENS`。
+```powershell
+# 懒获取（默认）
+npx mlex chat --search-mode lazy --search-endpoint "https://your-search-endpoint"
 
-### Web 前端
+# 自动获取
+npx mlex chat --search-mode auto --search-endpoint "https://your-search-endpoint" --search-topk 5
 
-```bash
+# 定时获取（每 30 分钟）
+npx mlex chat --search-mode scheduled --search-endpoint "https://your-search-endpoint" --search-seeds "payment retry,webhook idempotency" --search-schedule-minutes 30
+```
+
+
+示例：
+
+```powershell
 npx mlex web --provider deepseek-reasoner --model deepseek-reasoner --port 8787
 ```
 
-然后访问：`http://127.0.0.1:8787`
+默认地址：`http://127.0.0.1:8787`
 
-如果端口被占用，CLI 会自动回退到随机端口并打印最终地址。
+如果端口占用，会自动回退到随机端口并打印最终地址。
 
-页面内点击 `Debug` 按钮可打开右侧数据库调试窗口，展示存储后端、块/关系/原文数量、Retention 分布，并支持点击上下文块/数据库块/关系记录弹窗查看完整明细。
-调试表格包含时间与顺序号，便于按时间线追踪上下文块与关系演进。
-出于安全默认，Debug API、只读文件 API、`rawContext` 回传默认关闭；需要显式开启。
-Web 输入框支持本地命令：`/trace [n]`（读取 trace）与 `/trace-clear`（清空 trace），命令会直接调用 Debug API，不会发送给模型。
+常用参数（除 chat 参数外）：
 
-启用示例（PowerShell 可直接复制）：
+- `--host <host>`
+- `--port <number>`
+- `--web-debug-api true|false`
+- `--web-file-api true|false`
+- `--web-raw-context true|false`
+- `--web-admin-token <token>`
+- `--web-body-max-bytes <number>`
+
+启用 Debug/文件 API 示例：
 
 ```powershell
 npx mlex web --web-debug-api true --web-file-api true --web-raw-context true
 ```
 
-如需给 Debug/文件 API 增加令牌鉴权：
+启用鉴权示例：
 
 ```powershell
 npx mlex web --web-debug-api true --web-file-api true --web-admin-token "YOUR_TOKEN"
 ```
 
-请求时在 Header 里传：
+请求头可使用：
 
 - `x-mlex-admin-token: YOUR_TOKEN`
-- 或 `Authorization: Bearer YOUR_TOKEN`
+- `Authorization: Bearer YOUR_TOKEN`
 
-也可使用环境变量：
+## `mlex ask`
 
-- `MLEX_WEB_DEBUG_API_ENABLED=true`
-- `MLEX_WEB_FILE_API_ENABLED=true`
-- `MLEX_WEB_EXPOSE_RAW_CONTEXT=true`
-- `MLEX_WEB_ADMIN_TOKEN=YOUR_TOKEN`
-- `MLEX_WEB_REQUEST_BODY_MAX_BYTES=262144`
-- `MLEX_DEBUG_TRACE_ENABLED=true`
-- `MLEX_DEBUG_TRACE_MAX_ENTRIES=2000`
-
-Web API 也支持只读文件能力：
-
-- `GET /api/capabilities`（返回 debug/file/rawContext 能力与是否要求 admin token）
-- `GET /api/debug/traces?limit=500`（完整模型/Agent/工具调用 trace）
-- `POST /api/debug/traces/clear`（清空 trace）
-- `GET /api/files/list?path=.&maxEntries=200`
-- `GET /api/files/read?path=README.md&maxBytes=65536`
-
-### 导入文本
-
-```bash
-npx mlex ingest ./docs/notes.md
-```
-
-Lance（本地文件）示例：
-
-```bash
-npx mlex chat --storage-backend lance --lance-file .mlex/blocks.json
-```
-
-SQLite（推荐）示例：
-
-```bash
-npx mlex chat --storage-backend sqlite --raw-store-backend sqlite --relation-store-backend sqlite --sqlite-file .mlex/memory.db
-```
-
-Chroma 后端会在 `get/getMany/list` 时按需从远端集合水合数据（非仅进程内缓存）。
-
-只读文件命令（CLI）：
-
-```bash
-npx mlex files:list .
-npx mlex files:read README.md --max-bytes 2048
-```
-
-### 单次提问
-
-```bash
+```powershell
 npx mlex ask "回顾我们的 memory 架构"
-```
-
-流式单次提问：
-
-```bash
 npx mlex ask "总结当前方案" --provider openai --stream
 ```
 
-### 多 Agent 协作
+## `mlex ingest`
 
-```bash
+```powershell
+npx mlex ingest .\docs\notes.md
+```
+
+## `mlex swarm`
+
+```powershell
 npx mlex swarm "构建上线方案" --provider openai --agents 3
 ```
 
-会依次运行多个 Worker 角色（Planner/Implementer/Critic 等），最后由 Coordinator 汇总统一答案。
+说明：Worker（Planner/Implementer/Critic...）会并发执行，最后由 Coordinator 汇总。
+总耗时通常接近最慢 Worker 的响应时间。
 
-## 3) OpenAI Provider（可选）
+## Provider 配置
 
-```bash
-set OPENAI_API_KEY=YOUR_KEY
-set MLEX_PROVIDER=openai
+### OpenAI
+
+```powershell
+$env:OPENAI_API_KEY="YOUR_KEY"
+$env:MLEX_PROVIDER="openai"
 npx mlex chat --provider openai --model gpt-4.1-mini
 ```
 
-## 3.1) DeepSeek-Reasoner Provider（可选）
+OpenAI 关系抽取器：
 
-```bash
-set DEEPSEEK_API_KEY=YOUR_KEY
-set MLEX_PROVIDER=deepseek-reasoner
-npx mlex chat --provider deepseek-reasoner --model deepseek-reasoner --stream
-```
-
-OpenAI 关系抽取器（轻量模型）：
-
-```bash
+```powershell
 npx mlex chat --provider openai --relation-extractor openai --relation-model gpt-4.1-nano
 ```
 
-DeepSeek 关系抽取器（轻量模型）：
+### DeepSeek-Reasoner
 
-```bash
+```powershell
+$env:DEEPSEEK_API_KEY="YOUR_KEY"
+$env:MLEX_PROVIDER="deepseek-reasoner"
+npx mlex chat --provider deepseek-reasoner --model deepseek-reasoner --stream
+```
+
+DeepSeek 关系抽取器：
+
+```powershell
 npx mlex chat --provider deepseek-reasoner --relation-extractor deepseek --relation-model deepseek-reasoner
 ```
 
-## 3.2) SQLite 持久化配置（推荐）
+## 存储后端配置
 
-PowerShell:
+### SQLite（推荐）
 
 ```powershell
 $env:MLEX_STORAGE_BACKEND="sqlite"
@@ -233,69 +273,141 @@ $env:MLEX_SQLITE_FILE=".mlex/memory.db"
 npx mlex chat
 ```
 
-## 4) 架构映射
+### Lance（本地文件）
 
-- Phase 0 检索融合器：
-  - `src/memory/retrieval/IBlockRetriever.ts`
-  - `src/memory/retrieval/KeywordRetriever.ts`
-  - `src/memory/retrieval/VectorRetriever.ts`
-  - `src/memory/retrieval/GraphRetriever.ts`
-  - `src/memory/retrieval/FusionRetriever.ts`
-- Phase 1 分块策略：
-  - `src/memory/chunking/IChunkStrategy.ts`
-  - `src/memory/chunking/FixedTokenChunkStrategy.ts`
-  - `src/memory/chunking/SemanticBoundaryChunkStrategy.ts`
-  - `src/memory/chunking/HybridChunkStrategy.ts`
-- Phase 2 存储抽象：
-  - `src/memory/store/IBlockStore.ts`
-  - `src/memory/store/InMemoryBlockStore.ts`
-  - `src/memory/store/SQLiteBlockStore.ts`
-  - `src/memory/sqlite/SQLiteDatabase.ts`
-  - `src/memory/store/ChromaBlockStore.ts`
-  - `src/memory/store/LanceBlockStore.ts`
-  - `src/memory/raw/SQLiteRawEventStore.ts`
-  - `src/memory/relation/SQLiteRelationStore.ts`
-- Phase 3 关系抽取异步化：
-  - `src/memory/relation/RelationExtractor.ts`
-  - `src/memory/relation/OpenAIRelationExtractor.ts`
-  - `src/memory/relation/DeepSeekRelationExtractor.ts`
-  - `src/memory/relation/AsyncRelationQueue.ts`
-- Phase 3.5 管理层策略：
-  - `src/memory/management/HistoryMatchCalculator.ts`
-  - `src/memory/management/RetentionPolicyEngine.ts`
-  - `src/memory/management/RetentionActions.ts`
-- Phase 3.6 预测层：
-  - `src/memory/prediction/GraphEmbedder.ts`
-  - `src/memory/prediction/Node2VecGraphEmbedder.ts`
-  - `src/memory/prediction/TransEGraphEmbedder.ts`
-  - `src/memory/prediction/WeightedRandomWalk.ts`
-  - `src/memory/prediction/PredictorEngine.ts`
-- Phase 3.7 输出组装层：
-  - `src/memory/output/HybridRetriever.ts`
-  - `src/memory/output/RawBacktracker.ts`
-  - `src/memory/output/ContextAssembler.ts`
-- Phase 4 配置与 DI：
-  - `src/config.ts`
-  - `src/container.ts`
-- Agent 工作约束：
-  - `AgentDocs/AGENT.md`（优先）
-  - `AGENTS.md`（兼容回退）
-
-## 5) 测试
-
-```bash
-npm test
+```powershell
+npx mlex chat --storage-backend lance --lance-file .mlex/blocks.json
 ```
 
-## 6) 一键验收
+### Chroma
 
-```bash
+`chat` 命令可直接传参；其他命令建议用环境变量。
+
+```powershell
+$env:MLEX_STORAGE_BACKEND="chroma"
+$env:MLEX_CHROMA_BASE_URL="http://127.0.0.1:8000"
+$env:MLEX_CHROMA_COLLECTION="mlex-blocks"
+npx mlex chat
+```
+
+## 关键环境变量
+
+查看完整 CLI 参数可执行：
+
+```powershell
+npx mlex --help
+npx mlex chat --help
+npx mlex web --help
+```
+
+常用环境变量分组如下（对应 `src/config.ts`）：
+
+- Provider：
+  - `MLEX_PROVIDER`
+  - `OPENAI_API_KEY` `OPENAI_BASE_URL` `OPENAI_MODEL`
+  - `DEEPSEEK_API_KEY` `MLEX_DEEPSEEK_API_KEY` `DEEPSEEK_BASE_URL` `DEEPSEEK_MODEL`
+- 记忆分块与检索：
+  - `MLEX_MAX_TOKENS` `MLEX_MIN_TOKENS`
+  - `MLEX_RECENT_WINDOW` `MLEX_SEMANTIC_TOPK` `MLEX_FINAL_TOPK`
+  - `MLEX_KEYWORD_WEIGHT` `MLEX_VECTOR_WEIGHT` `MLEX_GRAPH_WEIGHT` `MLEX_VECTOR_MIN_SCORE`
+  - `MLEX_RELATION_DEPTH` `MLEX_GRAPH_TOPK` `MLEX_RELATION_EXPAND`
+- 主动 seal：
+  - `MLEX_PROACTIVE_SEAL_ENABLED`
+  - `MLEX_PROACTIVE_SEAL_IDLE_SECONDS`
+  - `MLEX_PROACTIVE_SEAL_TURN_BOUNDARY`
+  - `MLEX_PROACTIVE_SEAL_MIN_TOKENS`
+- 压缩与冲突：
+  - `MLEX_COMPRESS_HIGH_MATCH` `MLEX_COMPRESS_LOW_MATCH`
+  - `MLEX_COMPRESS_SOFT_BAND` `MLEX_COMPRESS_PRESERVE_WEIGHT`
+  - `MLEX_COMPRESS_MIN_RAW_TOKENS` `MLEX_CONFLICT_MARKER_ENABLED`
+- 预测：
+  - `MLEX_PREDICTION_ENABLED` `MLEX_PREDICTION_TOPK`
+  - `MLEX_PREDICTION_WALK_DEPTH` `MLEX_PREDICTION_ACTIVE_THRESHOLD`
+  - `MLEX_PREDICTION_DECAY` `MLEX_PREDICTION_BOOST_WEIGHT`
+- 搜索增强：
+  - `MLEX_SEARCH_AUGMENT_MODE` `MLEX_SEARCH_SCHEDULE_MINUTES` `MLEX_SEARCH_TOPK`
+  - `MLEX_SEARCH_ENDPOINT` `MLEX_SEARCH_API_KEY`
+  - `MLEX_WEB_FETCH_ENDPOINT` `MLEX_WEB_FETCH_API_KEY`
+  - `MLEX_SEARCH_SEED_QUERIES` `MLEX_SEARCH_TIMEOUT_MS`
+- 存储与关系抽取：
+  - `MLEX_CHUNK_STRATEGY` `MLEX_STORAGE_BACKEND`
+  - `MLEX_SQLITE_FILE` `MLEX_LANCE_FILE`
+  - `MLEX_CHROMA_BASE_URL` `MLEX_CHROMA_COLLECTION` `MLEX_CHROMA_API_KEY`
+  - `MLEX_RAW_STORE_BACKEND` `MLEX_RAW_STORE_FILE`
+  - `MLEX_RELATION_STORE_BACKEND` `MLEX_RELATION_STORE_FILE`
+  - `MLEX_GRAPH_EMBEDDING_METHOD`
+  - `MLEX_RELATION_EXTRACTOR` `MLEX_RELATION_MODEL` `MLEX_RELATION_TIMEOUT_MS`
+- Web 与调试：
+  - `MLEX_WEB_DEBUG_API_ENABLED` `MLEX_WEB_FILE_API_ENABLED`
+  - `MLEX_WEB_EXPOSE_RAW_CONTEXT` `MLEX_WEB_REQUEST_BODY_MAX_BYTES`
+  - `MLEX_WEB_ADMIN_TOKEN`
+  - `MLEX_DEBUG_TRACE_ENABLED` `MLEX_DEBUG_TRACE_MAX_ENTRIES`
+
+## Web API 概览
+
+- `GET /healthz`
+- `GET /api/capabilities`
+- `POST /api/chat`
+- `POST /api/chat/stream`（SSE：`token` + `done`）
+- `POST /api/seal`
+- `GET /api/debug/database`（需 `web-debug-api`）
+- `GET /api/debug/block?id=<blockId>`（需 `web-debug-api`）
+- `GET /api/debug/traces?limit=500`（需 `web-debug-api`）
+- `POST /api/debug/traces/clear`（需 `web-debug-api`）
+- `GET /api/files/list?path=.&maxEntries=200`（需 `web-file-api`）
+- `GET /api/files/read?path=README.md&maxBytes=65536`（需 `web-file-api`）
+
+## Agent 文档注入规则
+
+运行时默认优先加载并注入：
+
+1. `AgentDocs/AGENT.md`
+2. `AgentDocs/AGENTS.md`
+3. 当前目录向上回溯的 `AGENTS.md`
+
+当历史块为空时，会尝试注入 `AgentDocs/Introduction.md`（或根目录 `Introduction.md`）作为冷启动信息。
+
+## 架构目录映射
+
+- `src/memory/processing/*`：seal/index 处理链
+- `src/memory/management/*`：保留/压缩策略
+- `src/memory/relation/*`：关系抽取、图构建与持久化
+- `src/memory/prediction/*`：图嵌入、随机游走、预测
+- `src/memory/output/*`：检索组装与回溯
+- `src/tui/*`：TUI 输入解析、快捷键与布局渲染
+- `src/container.ts`：依赖注入与运行时装配
+
+## 验证与验收
+
+```powershell
+npm run typecheck
+npm test
+npm run build
 npm run verify:arch
 ```
 
-该命令会依次执行：
+`verify:arch` 会执行完整流水线（含 `acceptance`）。
 
-1. `typecheck`
-2. `unit/integration tests`
-3. `build`
-4. `acceptance`（自动启动 Web、写入样例会话、校验分块/关系/预测/流式、重启后校验持久化）
+## 常见问题
+
+### 1) `node:sqlite` 不可用
+
+现象：启动 sqlite 后端时报错（例如 `DatabaseSync export is unavailable`）。
+
+处理：
+
+- 升级到支持 `node:sqlite` 的 Node 版本（推荐 Node 22+）
+- 或切换到 `memory/lance/chroma` 后端
+
+### 2) Windows 下 `spawn EPERM`（`esbuild`）
+
+现象：`npm test` / `npm run build` 在 `esbuild` 子进程处失败。
+
+处理建议：
+
+- 检查安全软件是否拦截 `node_modules/esbuild/*`
+- 确认项目目录和 npm cache 目录有可执行权限
+- 在受限环境中优先跑 `npm run typecheck` 做快速校验
+
+
+

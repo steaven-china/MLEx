@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { readFile } from "node:fs/promises";
-import { stdin as input, stdout as output } from "node:process";
-import { createInterface } from "node:readline/promises";
-import type { Interface as ReadlineInterface } from "node:readline/promises";
+import { stdout as output } from "node:process";
 
 import { createRuntime } from "../container.js";
 import type { DeepPartial, AppConfig } from "../config.js";
@@ -13,6 +11,7 @@ import {
   type ReadFileResult,
   type ReadonlyFileEntry
 } from "../files/ReadonlyFileService.js";
+import { MlexTuiApp } from "../tui/MlexTuiApp.js";
 import { startWebServer } from "../web/server.js";
 
 const program = new Command();
@@ -40,6 +39,14 @@ program
   .option("--graph-embedding <method>", "node2vec | transe")
   .option("--relation-extractor <kind>", "heuristic | openai | deepseek")
   .option("--relation-model <model>", "relation extraction model name")
+  .option("--search-endpoint <url>", "search provider endpoint")
+  .option("--search-api-key <key>", "search provider api key")
+  .option("--web-fetch-endpoint <url>", "web fetch endpoint")
+  .option("--web-fetch-api-key <key>", "web fetch api key")
+  .option("--search-mode <mode>", "lazy | auto | scheduled")
+  .option("--search-schedule-minutes <number>", "scheduled ingest interval minutes")
+  .option("--search-topk <number>", "max results per search record")
+  .option("--search-seeds <csv>", "scheduled seed queries, comma separated")
   .option("--prediction <enabled>", "true | false")
   .option("--web-debug-api <enabled>", "true | false")
   .option("--web-file-api <enabled>", "true | false")
@@ -93,7 +100,7 @@ program
 
 program
   .command("chat")
-  .description("Start an interactive agent session")
+  .description("Start fullscreen TUI agent session")
   .option("--provider <provider>", "rule-based | openai | deepseek-reasoner")
   .option("--model <model>", "LLM model for openai/deepseek provider")
   .option("--stream", "enable streaming output", false)
@@ -111,6 +118,14 @@ program
   .option("--graph-embedding <method>", "node2vec | transe")
   .option("--relation-extractor <kind>", "heuristic | openai | deepseek")
   .option("--relation-model <model>", "relation extraction model name")
+  .option("--search-endpoint <url>", "search provider endpoint")
+  .option("--search-api-key <key>", "search provider api key")
+  .option("--web-fetch-endpoint <url>", "web fetch endpoint")
+  .option("--web-fetch-api-key <key>", "web fetch api key")
+  .option("--search-mode <mode>", "lazy | auto | scheduled")
+  .option("--search-schedule-minutes <number>", "scheduled ingest interval minutes")
+  .option("--search-topk <number>", "max results per search record")
+  .option("--search-seeds <csv>", "scheduled seed queries, comma separated")
   .option("--prediction <enabled>", "true | false")
   .option("--show-context", "print context debug info after each answer", false)
   .option("--debug-trace <enabled>", "true | false")
@@ -119,101 +134,18 @@ program
     const runtime = createRuntime(buildRuntimeOverrides(options));
     const fileService = new ReadonlyFileService({ rootPath: process.cwd() });
     const traceRecorder = runtime.container.resolve<IDebugTraceRecorder>("debugTraceRecorder");
-    const rl = createInterface({ input, output });
-    const lineReader = createLineReader(rl);
-    output.write("MLEX chat started. Commands: /exit /seal /ctx <query> /config /ml /ls [path] /cat <file> /trace [n] /trace-clear\n");
+    const tui = new MlexTuiApp({
+      runtime,
+      fileService,
+      traceRecorder,
+      streamEnabled: Boolean(options.stream),
+      showContextByDefault: Boolean(options.showContext),
+      sanitizeConfig: sanitizeConfigForDisplay
+    });
 
     try {
-      while (true) {
-        const rawInput = await lineReader.nextLine("you> ");
-        const commandInput = rawInput.trim();
-        if (!commandInput) continue;
-        if (commandInput === "/exit") break;
-
-        if (commandInput === "/seal") {
-          await runtime.agent.sealMemory();
-          output.write("agent> 当前 active block 已封存。\n");
-          continue;
-        }
-
-        if (commandInput.startsWith("/ctx ")) {
-          const query = commandInput.slice(5).trim();
-          const context = await runtime.agent.getContext(query);
-          output.write(`${context.formatted}\n`);
-          continue;
-        }
-
-        if (commandInput === "/config") {
-          output.write(`${JSON.stringify(sanitizeConfigForDisplay(runtime.config), null, 2)}\n`);
-          continue;
-        }
-
-        if (commandInput === "/trace-clear") {
-          traceRecorder.clear();
-          output.write("agent> trace 已清空。\n");
-          continue;
-        }
-
-        if (commandInput === "/trace" || commandInput.startsWith("/trace ")) {
-          const arg = getCommandArg(commandInput);
-          const limit = parseOptionalNumber(arg) ?? 200;
-          const entries = traceRecorder.list(Math.min(Math.max(limit, 1), 5000));
-          output.write(`${JSON.stringify({ total: traceRecorder.size(), entries }, null, 2)}\n`);
-          continue;
-        }
-
-        if (
-          commandInput === "/ls" ||
-          commandInput.startsWith("/ls ") ||
-          commandInput === "/list" ||
-          commandInput.startsWith("/list ")
-        ) {
-          try {
-            const pathInput = getCommandArg(commandInput) ?? ".";
-            const entries = await fileService.list(pathInput, 200);
-            output.write(formatFileList(entries, pathInput));
-          } catch (error) {
-            output.write(`agent> 文件列表失败: ${toErrorMessage(error)}\n`);
-          }
-          continue;
-        }
-
-        if (
-          commandInput.startsWith("/cat ") ||
-          commandInput.startsWith("/read ")
-        ) {
-          const pathInput = getCommandArg(commandInput);
-          if (!pathInput) {
-            output.write("agent> 用法: /cat <file>\n");
-            continue;
-          }
-          try {
-            const readResult = await fileService.read(pathInput, 64 * 1024);
-            output.write(formatFileRead(readResult));
-          } catch (error) {
-            output.write(`agent> 文件读取失败: ${toErrorMessage(error)}\n`);
-          }
-          continue;
-        }
-
-        if (commandInput === "/ml") {
-          const multi = await readMultilineInput(lineReader);
-          if (!multi) {
-            output.write("agent> 已取消多行输入。\n");
-            continue;
-          }
-          await handleChatInput(multi, options.stream, options.showContext, runtime);
-          continue;
-        }
-
-        const pastedTail = await lineReader.collectBufferedBurst(45);
-        const finalInput =
-          pastedTail.length > 0 ? [rawInput, ...pastedTail].join("\n").trim() : commandInput;
-        await handleChatInput(finalInput, options.stream, options.showContext, runtime);
-      }
+      await tui.run();
     } finally {
-      lineReader.close();
-      rl.close();
       await runtime.close();
     }
   });
@@ -234,6 +166,14 @@ program
   .option("--graph-embedding <method>", "node2vec | transe")
   .option("--relation-extractor <kind>", "heuristic | openai | deepseek")
   .option("--relation-model <model>", "relation extraction model name")
+  .option("--search-endpoint <url>", "search provider endpoint")
+  .option("--search-api-key <key>", "search provider api key")
+  .option("--web-fetch-endpoint <url>", "web fetch endpoint")
+  .option("--web-fetch-api-key <key>", "web fetch api key")
+  .option("--search-mode <mode>", "lazy | auto | scheduled")
+  .option("--search-schedule-minutes <number>", "scheduled ingest interval minutes")
+  .option("--search-topk <number>", "max results per search record")
+  .option("--search-seeds <csv>", "scheduled seed queries, comma separated")
   .option("--prediction <enabled>", "true | false")
   .action(async (file: string, options) => {
     const runtime = createRuntime(buildRuntimeOverrides(options));
@@ -271,6 +211,14 @@ program
   .option("--graph-embedding <method>", "node2vec | transe")
   .option("--relation-extractor <kind>", "heuristic | openai | deepseek")
   .option("--relation-model <model>", "relation extraction model name")
+  .option("--search-endpoint <url>", "search provider endpoint")
+  .option("--search-api-key <key>", "search provider api key")
+  .option("--web-fetch-endpoint <url>", "web fetch endpoint")
+  .option("--web-fetch-api-key <key>", "web fetch api key")
+  .option("--search-mode <mode>", "lazy | auto | scheduled")
+  .option("--search-schedule-minutes <number>", "scheduled ingest interval minutes")
+  .option("--search-topk <number>", "max results per search record")
+  .option("--search-seeds <csv>", "scheduled seed queries, comma separated")
   .option("--prediction <enabled>", "true | false")
   .action(async (query: string, options) => {
     const runtime = createRuntime(buildRuntimeOverrides(options));
@@ -306,23 +254,19 @@ program
   .option("--graph-embedding <method>", "node2vec | transe")
   .option("--relation-extractor <kind>", "heuristic | openai | deepseek")
   .option("--relation-model <model>", "relation extraction model name")
+  .option("--search-endpoint <url>", "search provider endpoint")
+  .option("--search-api-key <key>", "search provider api key")
+  .option("--web-fetch-endpoint <url>", "web fetch endpoint")
+  .option("--web-fetch-api-key <key>", "web fetch api key")
+  .option("--search-mode <mode>", "lazy | auto | scheduled")
+  .option("--search-schedule-minutes <number>", "scheduled ingest interval minutes")
+  .option("--search-topk <number>", "max results per search record")
+  .option("--search-seeds <csv>", "scheduled seed queries, comma separated")
   .option("--prediction <enabled>", "true | false")
   .action(async (query: string, options) => {
     const workerCount = clampAgents(options.agents);
     const roles = buildRoles(workerCount);
-    const workerResults: Array<{ role: string; text: string }> = [];
-
-    for (const role of roles) {
-      const runtime = createRuntime(buildRuntimeOverrides(options), {
-        agentSystemPrompt: role.systemPrompt
-      });
-      try {
-        const response = await runtime.agent.respond(`${role.instruction}\n\n任务：${query}`);
-        workerResults.push({ role: role.name, text: response.text });
-      } finally {
-        await runtime.close();
-      }
-    }
+    const workerResults = await runSwarmWorkers(query, options, roles);
 
     if (options.showDrafts) {
       for (const item of workerResults) {
@@ -367,6 +311,11 @@ function buildRuntimeOverrides(options: Record<string, unknown>): DeepPartial<Ap
       lanceFilePath: asOptionalString(options.lanceFile),
       chromaBaseUrl: asOptionalString(options.chromaBaseUrl),
       chromaCollectionId: asOptionalString(options.chromaCollection),
+      searchEndpoint: asOptionalString(options.searchEndpoint),
+      searchApiKey: asOptionalString(options.searchApiKey),
+      webFetchEndpoint: asOptionalString(options.webFetchEndpoint),
+      webFetchApiKey: asOptionalString(options.webFetchApiKey),
+      searchSeedQueries: parseOptionalCsv(asOptionalString(options.searchSeeds)),
       rawStoreBackend:
         asOptionalString(options.rawStoreBackend) as AppConfig["component"]["rawStoreBackend"],
       rawStoreFilePath: asOptionalString(options.rawStoreFile),
@@ -388,7 +337,10 @@ function buildRuntimeOverrides(options: Record<string, unknown>): DeepPartial<Ap
     },
     manager: {
       maxTokensPerBlock: parseOptionalNumber(asOptionalString(options.maxTokens)),
-      predictionEnabled: parseOptionalBoolean(asOptionalString(options.prediction))
+      predictionEnabled: parseOptionalBoolean(asOptionalString(options.prediction)),
+      searchAugmentMode: asOptionalString(options.searchMode) as AppConfig["manager"]["searchAugmentMode"],
+      searchScheduleMinutes: parseOptionalNumber(asOptionalString(options.searchScheduleMinutes)),
+      searchTopK: parseOptionalNumber(asOptionalString(options.searchTopk))
     }
   };
 }
@@ -412,11 +364,13 @@ function parseOptionalBoolean(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
-function getCommandArg(input: string): string | undefined {
-  const spaceIndex = input.indexOf(" ");
-  if (spaceIndex < 0) return undefined;
-  const value = input.slice(spaceIndex + 1).trim();
-  return value.length > 0 ? value : undefined;
+function parseOptionalCsv(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const items = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  return items.length > 0 ? items : undefined;
 }
 
 function formatFileList(entries: ReadonlyFileEntry[], pathInput: string): string {
@@ -435,10 +389,6 @@ function formatFileList(entries: ReadonlyFileEntry[], pathInput: string): string
 function formatFileRead(result: ReadFileResult): string {
   const meta = `agent> readonly read: ${result.path} (${result.bytes}/${result.totalBytes} bytes${result.truncated ? ", truncated" : ""})\n`;
   return `${meta}${result.text}\n`;
-}
-
-function toErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function sanitizeConfigForDisplay(config: AppConfig): AppConfig {
@@ -500,107 +450,27 @@ function buildRoles(count: number): Array<{ name: string; instruction: string; s
   return templates.slice(0, count);
 }
 
-async function readMultilineInput(lineReader: LineReader): Promise<string | undefined> {
-  output.write("输入多行内容，使用 /end 提交，/cancel 取消。\n");
-  const lines: string[] = [];
-  while (true) {
-    const line = await lineReader.nextLine("... ");
-    if (line.trim() === "/cancel") {
-      return undefined;
-    }
-    if (line.trim() === "/end") {
-      break;
-    }
-    lines.push(line);
-  }
-  return lines.join("\n").trim();
-}
-
-async function handleChatInput(
-  userInput: string,
-  stream: boolean,
-  showContext: boolean,
-  runtime: ReturnType<typeof createRuntime>
-): Promise<void> {
-  if (!userInput) return;
-  if (stream) {
-    output.write("agent> ");
-    const response = await runtime.agent.respondStream(userInput, (token) => {
-      output.write(token);
-    });
-    output.write("\n");
-    if (showContext) {
-      output.write(`${response.context.formatted}\n`);
-    }
-    return;
-  }
-
-  const response = await runtime.agent.respond(userInput);
-  output.write(`agent> ${response.text}\n`);
-  if (showContext) {
-    output.write(`${response.context.formatted}\n`);
-  }
-}
-
-interface LineReader {
-  nextLine(prompt: string): Promise<string>;
-  collectBufferedBurst(waitMs: number): Promise<string[]>;
-  close(): void;
-}
-
-function createLineReader(rl: ReadlineInterface): LineReader {
-  const buffer: string[] = [];
-  let resolver: ((line: string) => void) | undefined;
-
-  const onLine = (line: string): void => {
-    if (resolver) {
-      const activeResolver = resolver;
-      resolver = undefined;
-      activeResolver(line);
-      return;
-    }
-    buffer.push(line);
-  };
-
-  rl.on("line", onLine);
-
-  return {
-    async nextLine(prompt: string): Promise<string> {
-      output.write(prompt);
-      if (buffer.length > 0) {
-        return buffer.shift() ?? "";
-      }
-      return new Promise<string>((resolve) => {
-        resolver = resolve;
+async function runSwarmWorkers(
+  query: string,
+  options: Record<string, unknown>,
+  roles: Array<{ name: string; instruction: string; systemPrompt: string }>
+): Promise<Array<{ role: string; text: string }>> {
+  return Promise.all(
+    roles.map(async (role) => {
+      const runtime = createRuntime(buildRuntimeOverrides(options), {
+        agentSystemPrompt: role.systemPrompt
       });
-    },
-    async collectBufferedBurst(waitMs: number): Promise<string[]> {
-      await sleep(waitMs);
-      if (buffer.length === 0) return [];
-      const lines: string[] = [];
-      while (buffer.length > 0) {
-        const line = buffer.shift();
-        if (typeof line === "string") {
-          lines.push(line);
-        }
+      try {
+        const response = await runtime.agent.respond(`${role.instruction}\n\n任务：${query}`);
+        return {
+          role: role.name,
+          text: response.text
+        };
+      } finally {
+        await runtime.close();
       }
-      return lines;
-    },
-    close(): void {
-      rl.off("line", onLine);
-      if (resolver) {
-        const activeResolver = resolver;
-        resolver = undefined;
-        activeResolver("");
-      }
-    }
-  };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
+    })
+  );
 }
 
 async function startWebServerWithFallback(
