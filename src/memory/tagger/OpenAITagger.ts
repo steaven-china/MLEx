@@ -5,16 +5,17 @@ import {
 
 export interface OpenAITaggerConfig extends LLMTaggerConfig {}
 
-const OPENAI_TAGGER_SYSTEM_PROMPT =
+const buildOpenAiTaggerSystemPrompt = (allowedAiTags: string[]): string =>
   "You are a strict memory tagger. Return JSON only. " +
-  'Format: {"tags":["important"|"normal"],"importantScore":0.0-1.0}. ';
+  `Allowed tags: ${allowedAiTags.join(", ")}. ` +
+  'Format: {"tags":["<allowed_tag>"],"importantScore":0.0-1.0}. ';
 
 export class OpenAITagger extends LLMTagger {
   constructor(config: OpenAITaggerConfig) {
     super(config, {
       providerName: "OpenAI",
       defaultBaseUrl: "https://api.openai.com/v1",
-      systemPrompt: OPENAI_TAGGER_SYSTEM_PROMPT
+      buildSystemPrompt: buildOpenAiTaggerSystemPrompt
     });
   }
 }

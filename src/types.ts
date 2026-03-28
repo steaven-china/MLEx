@@ -12,7 +12,7 @@ export interface MemoryEvent {
 
 export type RetentionMode = "compressed" | "raw" | "conflict";
 
-export type BlockTag = "important" | "normal";
+export type BlockTag = string;
 
 export enum RelationType {
   CAUSES = "CAUSES",

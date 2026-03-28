@@ -28,6 +28,17 @@ describe("HeuristicTagger", () => {
     const tags = await tagger.tag(block);
     expect(tags).toEqual(["important"]);
   });
+
+  test("uses configured fallback tag when important tag is unavailable", async () => {
+    const tagger = new HeuristicTagger({
+      importantThreshold: 0.6,
+      allowedAiTags: ["routine", "ops"]
+    });
+    const block = buildBlock("b4", "生产故障导致紧急回滚");
+
+    const tags = await tagger.tag(block);
+    expect(tags).toEqual(["routine"]);
+  });
 });
 
 function buildBlock(id: string, summary: string): MemoryBlock {

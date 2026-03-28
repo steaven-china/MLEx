@@ -7,6 +7,7 @@ import type { IRawEventStore } from "../raw/IRawEventStore.js";
 import type { ITagger } from "../tagger/Tagger.js";
 import type { ISummarizer } from "../summarizer/ISummarizer.js";
 import type { MemoryBlock } from "../MemoryBlock.js";
+import { normalizeBlockTags } from "../tagger/TagNormalizer.js";
 
 export interface SealProcessorDeps {
   summarizer: ISummarizer;
@@ -15,6 +16,7 @@ export interface SealProcessorDeps {
   historyMatchCalculator: IHistoryMatchCalculator;
   retentionPolicy: RetentionPolicyEngine;
   tagger: ITagger;
+  allowedAiTags: string[];
 }
 
 export interface SealProcessResult {
@@ -45,7 +47,7 @@ export class SealProcessor {
       relationBoost: matchResult.relationBoost
     });
     await decision.action.apply(block, this.deps.rawStore);
-    block.tags = normalizeTags(await this.deps.tagger.tag(block));
+    block.tags = normalizeBlockTags(await this.deps.tagger.tag(block), this.deps.allowedAiTags);
 
     return {
       block,
@@ -70,16 +72,4 @@ export class SealProcessor {
 
 function joinEventText(events: MemoryEvent[]): string {
   return events.map((event) => event.text).join(" ");
-}
-
-function normalizeTags(tags: string[]): Array<"important" | "normal"> {
-  const output: Array<"important" | "normal"> = [];
-  for (const tag of tags) {
-    if ((tag === "important" || tag === "normal") && !output.includes(tag)) {
-      output.push(tag);
-    }
-  }
-  if (output.includes("important")) return ["important"];
-  if (output.includes("normal")) return ["normal"];
-  return ["normal"];
 }

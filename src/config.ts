@@ -1,5 +1,5 @@
 import type { ManagerConfig } from "./types.js";
-import { loadUserTomlConfig } from "./config/toml.js";
+import { ensureDefaultUserConfigFiles, loadUserTomlConfig } from "./config/toml.js";
 
 export interface EnvironmentConfig {
   nodeEnv: string;
@@ -60,6 +60,11 @@ export interface ComponentConfig {
   taggerModel: string;
   taggerTimeoutMs: number;
   taggerImportantThreshold: number;
+  allowedAiTags: string[];
+  includeTagsIntro: boolean;
+  tagsIntroPath?: string;
+  tagsTomlPath?: string;
+  tagsTemplateVars: Record<string, string>;
   rawStoreBackend: "memory" | "file" | "sqlite";
   rawStoreFilePath: string;
   relationStoreBackend: "memory" | "file" | "sqlite";
@@ -141,6 +146,9 @@ export function loadConfig(
   options: LoadConfigOptions = {}
 ): AppConfig {
   const shouldLoadUserToml = options.userTomlPath !== undefined || process.env.NODE_ENV !== "test";
+  if (shouldLoadUserToml) {
+    ensureDefaultUserConfigFiles({ configFilePath: options.userTomlPath });
+  }
   const userToml = shouldLoadUserToml ? loadUserTomlConfig({ filePath: options.userTomlPath }) : {};
   const environment: EnvironmentConfig = {
     nodeEnv: process.env.NODE_ENV ?? "development",
@@ -300,6 +308,11 @@ export function loadConfig(
     taggerModel: process.env.MLEX_TAGGER_MODEL ?? "gpt-4.1-nano",
     taggerTimeoutMs: parseEnvNumber("MLEX_TAGGER_TIMEOUT_MS", 10000),
     taggerImportantThreshold: parseEnvFloat("MLEX_TAGGER_IMPORTANT_THRESHOLD", 0.6),
+    allowedAiTags: parseAllowedAiTags(process.env.MLEX_ALLOWED_AI_TAGS),
+    includeTagsIntro: (process.env.MLEX_INCLUDE_TAGS_INTRO ?? "true").toLowerCase() !== "false",
+    tagsIntroPath: process.env.MLEX_TAGS_INTRO,
+    tagsTomlPath: process.env.MLEX_TAGS_TOML,
+    tagsTemplateVars: parseTagTemplateVarsFromEnv(process.env),
     rawStoreBackend:
       (process.env.MLEX_RAW_STORE_BACKEND as ComponentConfig["rawStoreBackend"]) ??
       (environment.nodeEnv === "test" ? "memory" : "sqlite"),
@@ -411,6 +424,27 @@ function parseEnvCsv(name: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+}
+
+function parseAllowedAiTags(raw: string | undefined): string[] {
+  const tags = (raw ?? "important,normal")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length > 0);
+  const deduped = [...new Set(tags)];
+  return deduped.length > 0 ? deduped : ["normal"];
+}
+
+function parseTagTemplateVarsFromEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (!key.startsWith("MLEX_TAG_VAR_")) continue;
+    if (typeof value !== "string") continue;
+    const name = key.slice("MLEX_TAG_VAR_".length).trim();
+    if (!name) continue;
+    output[name] = value;
+  }
+  return output;
 }
 
 function deepMerge<T extends object>(base: T, overrides: DeepPartial<T>): T {

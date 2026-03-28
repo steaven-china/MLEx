@@ -14,7 +14,7 @@ If you are building an agent that needs long-lived context (engineering assistan
 
 - **Ready to run**: `mlex chat` / `mlex web` / `mlex ask`
 - **Pluggable storage**: `memory` / `sqlite` / `lance` / `chroma`
-- **Pluggable providers**: `rule-based` / `openai` / `deepseek-reasoner`
+- **Pluggable providers**: `rule-based` / `openai` / `deepseek-reasoner` / `anthropic-claude` / `google-gemini` / `openrouter` / `azure-openai` / `openai-compatible`
 - **Observable and tunable**: debug trace, retrieval weights, compression policy, prediction policy
 - **Tool calls can be persisted**: `web.search.record`, `web.fetch.record`, `readonly.list`, `readonly.read`
 
@@ -133,6 +133,49 @@ export MLEX_PROVIDER="deepseek-reasoner"
 npx mlex chat --provider deepseek-reasoner --model deepseek-reasoner --stream
 ```
 
+### Anthropic Claude
+
+```bash
+export ANTHROPIC_API_KEY="YOUR_KEY"
+export MLEX_PROVIDER="anthropic-claude"
+npx mlex chat --provider anthropic-claude --model claude-3-5-sonnet-latest
+```
+
+### Google Gemini
+
+```bash
+export GEMINI_API_KEY="YOUR_KEY"
+export MLEX_PROVIDER="google-gemini"
+npx mlex chat --provider google-gemini --model gemini-1.5-pro
+```
+
+### OpenRouter
+
+```bash
+export OPENROUTER_API_KEY="YOUR_KEY"
+export MLEX_PROVIDER="openrouter"
+npx mlex chat --provider openrouter --model openai/gpt-4o-mini
+```
+
+### Azure OpenAI
+
+```bash
+export AZURE_OPENAI_API_KEY="YOUR_KEY"
+export AZURE_OPENAI_ENDPOINT="https://<resource>.openai.azure.com"
+export AZURE_OPENAI_DEPLOYMENT="gpt4o"
+export MLEX_PROVIDER="azure-openai"
+npx mlex chat --provider azure-openai --model gpt-4o-mini
+```
+
+### OpenAI-compatible
+
+```bash
+export OPENAI_COMPATIBLE_API_KEY="YOUR_KEY"
+export OPENAI_COMPATIBLE_BASE_URL="https://example.com/v1"
+export MLEX_PROVIDER="openai-compatible"
+npx mlex chat --provider openai-compatible --model gpt-4o-mini
+```
+
 ---
 
 ## Storage Backend Examples
@@ -160,6 +203,116 @@ export MLEX_STORAGE_BACKEND="chroma"
 export MLEX_CHROMA_BASE_URL="http://127.0.0.1:8000"
 export MLEX_CHROMA_COLLECTION="mlex-blocks"
 npx mlex chat
+```
+
+---
+
+## Customize AI Tags
+
+You can customize the tag set used by AI taggers and persistence normalization.
+
+### Environment variable
+
+```bash
+export MLEX_ALLOWED_AI_TAGS="important,normal,critical,ops"
+```
+
+### TOML
+
+```toml
+[component]
+allowedAiTags = ["important", "normal", "critical", "ops"]
+```
+
+Notes:
+- tags are normalized as lowercase + trimmed
+- duplicates are removed
+- unknown tags from model output are dropped
+- if no valid tag remains, fallback prefers `normal` (or the first allowed tag)
+
+---
+
+## TagsIntro Injection (Tag Documentation Prompt)
+
+You can inject tag-specific guidance into the system prompt via `TagsIntro.md` and `~/.mlex/tags.toml`.
+
+On first startup, MLEX auto-creates both files if missing:
+- `~/.mlex/config.toml`
+- `~/.mlex/tags.toml`
+
+### File-based injection
+
+MLEX loads TagsIntro content in this order:
+1. explicit runtime/CLI `--tags-intro <path>`
+2. `AgentDocs/TagsIntro.md`
+3. `TagsIntro.md` (workspace root)
+
+The content is appended as a dedicated `=== TAGS INTRODUCTION ===` section in system prompt.
+
+### Template variables
+
+TagsIntro supports simple placeholders:
+- `{{name}}` → replace with variable value
+- `\{{` → escape into literal `{{`
+- unknown variables resolve to empty string
+
+### `~/.mlex/tags.toml`
+
+Default path: `~/.mlex/tags.toml` (override with `--tags-toml` or `MLEX_TAGS_TOML`).
+
+Example:
+
+```toml
+[docs]
+intro = "Use tags consistently for {{team}} workflows."
+item = [
+  "critical: user-visible outage or rollback risk",
+  "normal: routine state transitions"
+]
+
+[vars]
+team = "payments"
+owner = "oncall"
+```
+
+`[docs]` is rendered into the same TAGS INTRODUCTION section (before file-based TagsIntro docs).
+
+### Runtime / env controls
+
+- `--include-tags-intro <true|false>` / `MLEX_INCLUDE_TAGS_INTRO`
+- `--tags-intro <path>` / `MLEX_TAGS_INTRO`
+- `--tags-toml <path>` / `MLEX_TAGS_TOML`
+- `--tags-vars key=value,key2=value2` / `MLEX_TAG_VAR_<KEY>=...`
+
+### `config.toml` controls
+
+You can also set TagsIntro behavior in `~/.mlex/config.toml`:
+
+```toml
+[component]
+includeTagsIntro = true
+tagsIntroPath = "AgentDocs/TagsIntro.md"
+tagsTomlPath = "~/.mlex/tags.toml"
+
+[component.tagsTemplateVars]
+team = "payments"
+owner = "oncall"
+```
+
+Precedence: runtime/CLI > env > config.toml > defaults.
+
+Variable precedence: runtime `--tags-vars` > env `MLEX_TAG_VAR_*` > `component.tagsTemplateVars` > `~/.mlex/tags.toml` `[vars]`.
+
+### Path notes (Windows / spaces)
+
+- If a path contains spaces, always wrap it in quotes in CLI commands.
+- Prefer absolute paths for `tagsTomlPath` to avoid ambiguity around shell `~` expansion.
+
+Examples:
+
+```bash
+npx mlex chat --tags-toml "C:\Users\Steaven Jiang\.mlex\tags.toml"
+npx mlex chat --tags-intro "D:\Work Space\MLEX\AgentDocs\TagsIntro.md"
 ```
 
 ---

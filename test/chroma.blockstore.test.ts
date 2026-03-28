@@ -30,7 +30,8 @@ describe("ChromaBlockStore", () => {
             ],
             retentionMode: "raw",
             matchScore: 0.2,
-            conflict: false
+            conflict: false,
+            tags: ["critical"]
           }
         ],
         embeddings: [[0.1, 0.2]]
@@ -38,16 +39,20 @@ describe("ChromaBlockStore", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const store = new ChromaBlockStore({
-      baseUrl: "http://localhost:8000",
-      collectionId: "mlex"
-    });
+    const store = new ChromaBlockStore(
+      {
+        baseUrl: "http://localhost:8000",
+        collectionId: "mlex"
+      },
+      ["critical", "normal"]
+    );
 
     const block = await store.get("block-1");
     expect(block?.id).toBe("block-1");
     expect(block?.summary).toBe("summary-1");
     expect(block?.keywords).toEqual(["alpha"]);
     expect(block?.embedding).toEqual([0.1, 0.2]);
+    expect(block?.tags).toEqual(["critical"]);
 
     await store.get("block-1");
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -68,10 +73,13 @@ describe("ChromaBlockStore", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const store = new ChromaBlockStore({
-      baseUrl: "http://localhost:8000",
-      collectionId: "mlex"
-    });
+    const store = new ChromaBlockStore(
+      {
+        baseUrl: "http://localhost:8000",
+        collectionId: "mlex"
+      },
+      ["critical", "normal"]
+    );
 
     const blocks = await store.list();
     expect(blocks.map((block) => block.id)).toEqual(["a", "b"]);

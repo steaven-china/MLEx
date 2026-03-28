@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 
 import { MemoryBlock } from "../MemoryBlock.js";
 import { writeJsonAtomic } from "../../utils/fs.js";
+import { normalizeBlockTags } from "../tagger/TagNormalizer.js";
 import type { IBlockStore } from "./IBlockStore.js";
 
 export interface LanceBlockStoreConfig {
@@ -27,7 +28,10 @@ export class LanceBlockStore implements IBlockStore {
   private readonly table = new Map<string, MemoryBlock>();
   private initialized = false;
 
-  constructor(private readonly config: LanceBlockStoreConfig) {}
+  constructor(
+    private readonly config: LanceBlockStoreConfig,
+    private readonly allowedAiTags: string[] = ["important", "normal"]
+  ) {}
 
   async upsert(block: MemoryBlock): Promise<void> {
     await this.ensureLoaded();
@@ -70,7 +74,7 @@ export class LanceBlockStore implements IBlockStore {
         block.retentionMode = item.retentionMode ?? "raw";
         block.matchScore = item.matchScore ?? 0;
         block.conflict = item.conflict ?? false;
-        block.tags = normalizeTags(item.tags);
+        block.tags = normalizeBlockTags(item.tags, this.allowedAiTags);
         this.table.set(block.id, block);
       }
     } catch (error) {
@@ -94,20 +98,8 @@ export class LanceBlockStore implements IBlockStore {
       retentionMode: block.retentionMode,
       matchScore: block.matchScore,
       conflict: block.conflict,
-      tags: normalizeTags(block.tags)
+      tags: normalizeBlockTags(block.tags, this.allowedAiTags)
     }));
     await writeJsonAtomic(this.config.filePath, serialized);
   }
-}
-
-function normalizeTags(tags: string[] | undefined): Array<"important" | "normal"> {
-  const output: Array<"important" | "normal"> = [];
-  for (const tag of tags ?? []) {
-    if ((tag === "important" || tag === "normal") && !output.includes(tag)) {
-      output.push(tag);
-    }
-  }
-  if (output.includes("important")) return ["important"];
-  if (output.includes("normal")) return ["normal"];
-  return ["normal"];
 }

@@ -14,7 +14,7 @@ describe("SQLiteBlockStore getMany", () => {
     const sqliteFile = join(folder, "memory.db");
     const sqlite = new SQLiteDatabase({ filePath: sqliteFile });
     try {
-      const store = new SQLiteBlockStore(sqlite);
+      const store = new SQLiteBlockStore(sqlite, ["critical", "normal"]);
 
       const b1 = new MemoryBlock("block_1", 1000);
       b1.summary = "first";
@@ -38,14 +38,14 @@ describe("SQLiteBlockStore getMany", () => {
     const sqliteFile = join(folder, "memory.db");
     const sqlite = new SQLiteDatabase({ filePath: sqliteFile });
     try {
-      const store = new SQLiteBlockStore(sqlite);
+      const store = new SQLiteBlockStore(sqlite, ["critical", "normal"]);
       const block = new MemoryBlock("block_tags", 1234);
       block.summary = "incident rollback blocked";
-      block.tags = ["important"];
+      block.tags = ["critical"];
       store.upsert(block);
 
       const loaded = store.get("block_tags");
-      expect(loaded?.tags).toEqual(["important"]);
+      expect(loaded?.tags).toEqual(["critical"]);
     } finally {
       sqlite.close();
     }
@@ -68,9 +68,9 @@ describe("SQLiteBlockStore getMany", () => {
         )
       `);
 
-      const store = new SQLiteBlockStore(sqlite);
+      const store = new SQLiteBlockStore(sqlite, ["critical", "ops"]);
       const loaded = store.get("legacy_block");
-      expect(loaded?.tags).toEqual(["normal"]);
+      expect(loaded?.tags).toEqual(["critical"]);
     } finally {
       sqlite.close();
     }

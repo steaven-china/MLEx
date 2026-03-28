@@ -1,5 +1,6 @@
 import type { EventRole, MemoryEvent } from "../../types.js";
 import { MemoryBlock } from "../MemoryBlock.js";
+import { normalizeBlockTags } from "../tagger/TagNormalizer.js";
 import type { IBlockStore } from "./IBlockStore.js";
 
 export interface ChromaBlockStoreConfig {
@@ -19,7 +20,10 @@ export class ChromaBlockStore implements IBlockStore {
   private readonly cache = new Map<string, MemoryBlock>();
   private hydrateAllPromise?: Promise<void>;
 
-  constructor(private readonly config: ChromaBlockStoreConfig) {}
+  constructor(
+    private readonly config: ChromaBlockStoreConfig,
+    private readonly allowedAiTags: string[] = ["important", "normal"]
+  ) {}
 
   async upsert(block: MemoryBlock): Promise<void> {
     this.cache.set(block.id, block);
@@ -109,7 +113,8 @@ export class ChromaBlockStore implements IBlockStore {
         id: blockId,
         document: documents[index],
         metadata,
-        embedding: embeddings[index]
+        embedding: embeddings[index],
+        allowedAiTags: this.allowedAiTags
       });
       this.cache.set(block.id, block);
     }
@@ -140,6 +145,7 @@ function deserializeBlock(input: {
   document: unknown;
   metadata: Record<string, unknown>;
   embedding: unknown;
+  allowedAiTags: string[];
 }): MemoryBlock {
   const startTime = asFiniteNumber(input.metadata.startTime, Date.now());
   const block = new MemoryBlock(input.id, startTime);
@@ -157,7 +163,7 @@ function deserializeBlock(input: {
   block.retentionMode = parseRetentionMode(input.metadata.retentionMode);
   block.matchScore = asFiniteNumber(input.metadata.matchScore, 0);
   block.conflict = asBoolean(input.metadata.conflict);
-  block.tags = normalizeTags(input.metadata.tags);
+  block.tags = normalizeBlockTags(input.metadata.tags, input.allowedAiTags);
   return block;
 }
 
@@ -227,18 +233,4 @@ function parseRole(value: unknown): EventRole | undefined {
     return value;
   }
   return undefined;
-}
-
-function normalizeTags(value: unknown): Array<"important" | "normal"> {
-  const output: Array<"important" | "normal"> = [];
-  if (Array.isArray(value)) {
-    for (const tag of value) {
-      if ((tag === "important" || tag === "normal") && !output.includes(tag)) {
-        output.push(tag);
-      }
-    }
-  }
-  if (output.includes("important")) return ["important"];
-  if (output.includes("normal")) return ["normal"];
-  return ["normal"];
 }

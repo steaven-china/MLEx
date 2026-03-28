@@ -1,9 +1,11 @@
 import type { BlockTag } from "../../types.js";
+import { normalizeAllowedAiTags } from "./TagNormalizer.js";
 import type { MemoryBlock } from "../MemoryBlock.js";
 import type { ITagger } from "./Tagger.js";
 
 export interface HeuristicTaggerConfig {
   importantThreshold: number;
+  allowedAiTags?: string[];
 }
 
 const IMPORTANT_HINTS = [
@@ -27,14 +29,22 @@ const IMPORTANT_HINTS = [
 
 export class HeuristicTagger implements ITagger {
   private readonly threshold: number;
+  private readonly allowedAiTags: string[];
 
   constructor(config: HeuristicTaggerConfig) {
     this.threshold = clamp01(config.importantThreshold);
+    this.allowedAiTags = normalizeAllowedAiTags(config.allowedAiTags);
   }
 
   async tag(block: MemoryBlock): Promise<BlockTag[]> {
     const score = evaluateImportance(block);
-    return score >= this.threshold ? ["important"] : ["normal"];
+    if (score >= this.threshold && this.allowedAiTags.includes("important")) {
+      return ["important"];
+    }
+    if (this.allowedAiTags.includes("normal")) {
+      return ["normal"];
+    }
+    return [this.allowedAiTags[0] ?? "normal"];
   }
 }
 

@@ -1,5 +1,6 @@
 export * from "./types.js";
 export * from "./config.js";
+export * from "./config/tagsToml.js";
 export * from "./container.js";
 export * from "./files/ReadonlyFileService.js";
 export * from "./debug/DebugTraceRecorder.js";

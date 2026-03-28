@@ -2,6 +2,7 @@ import { MemoryBlock } from "../MemoryBlock.js";
 import type { IBlockStore } from "./IBlockStore.js";
 import type { StatementSync } from "node:sqlite";
 import type { SQLiteDatabase } from "../sqlite/SQLiteDatabase.js";
+import { normalizeBlockTags } from "../tagger/TagNormalizer.js";
 
 type Row = {
   id: string;
@@ -24,7 +25,10 @@ export class SQLiteBlockStore implements IBlockStore {
   private readonly listStatement: StatementSync;
   private readonly getManyStatements = new Map<number, StatementSync>();
 
-  constructor(private readonly sqlite: SQLiteDatabase) {
+  constructor(
+    private readonly sqlite: SQLiteDatabase,
+    private readonly allowedAiTags: string[] = ["important", "normal"]
+  ) {
     this.upsertStatement = this.sqlite.handle.prepare(`
       INSERT INTO blocks (
         id, start_time, end_time, token_count, summary,
@@ -73,13 +77,13 @@ export class SQLiteBlockStore implements IBlockStore {
       block.retentionMode,
       block.matchScore,
       block.conflict ? 1 : 0,
-      JSON.stringify(normalizeTags(block.tags))
+      JSON.stringify(normalizeBlockTags(block.tags, this.allowedAiTags))
     );
   }
 
   get(blockId: string): MemoryBlock | undefined {
     const row = this.getStatement.get(blockId) as Row | undefined;
-    return row ? toMemoryBlock(row) : undefined;
+    return row ? toMemoryBlock(row, this.allowedAiTags) : undefined;
   }
 
   getMany(blockIds: string[]): MemoryBlock[] {
@@ -89,7 +93,7 @@ export class SQLiteBlockStore implements IBlockStore {
     const statement = this.getManyStatement(uniqueIds.length);
     const rows = statement.all(...uniqueIds) as Row[];
     const byId = new Map(rows.map((row) => {
-      const block = toMemoryBlock(row);
+      const block = toMemoryBlock(row, this.allowedAiTags);
       return [block.id, block];
     }));
 
@@ -100,7 +104,7 @@ export class SQLiteBlockStore implements IBlockStore {
 
   list(): MemoryBlock[] {
     const rows = this.listStatement.all() as Row[];
-    return rows.map(toMemoryBlock);
+    return rows.map((row) => toMemoryBlock(row, this.allowedAiTags));
   }
 
   private getManyStatement(arity: number): StatementSync {
@@ -121,7 +125,7 @@ export class SQLiteBlockStore implements IBlockStore {
   }
 }
 
-function toMemoryBlock(row: Row): MemoryBlock {
+function toMemoryBlock(row: Row, allowedAiTags: string[]): MemoryBlock {
   const block = new MemoryBlock(row.id, row.start_time);
   block.endTime = row.end_time;
   block.tokenCount = row.token_count;
@@ -132,7 +136,7 @@ function toMemoryBlock(row: Row): MemoryBlock {
   block.retentionMode = row.retention_mode ?? "raw";
   block.matchScore = typeof row.match_score === "number" ? row.match_score : 0;
   block.conflict = row.conflict === 1;
-  block.tags = normalizeTags(parseJson<string[]>(row.tags_json, ["normal"]));
+  block.tags = normalizeBlockTags(parseJson<string[]>(row.tags_json, ["normal"]), allowedAiTags);
   return block;
 }
 
@@ -142,18 +146,4 @@ function parseJson<T>(raw: string, fallback: T): T {
   } catch {
     return fallback;
   }
-}
-
-function normalizeTags(tags: unknown): Array<"important" | "normal"> {
-  const output: Array<"important" | "normal"> = [];
-  if (Array.isArray(tags)) {
-    for (const tag of tags) {
-      if ((tag === "important" || tag === "normal") && !output.includes(tag)) {
-        output.push(tag);
-      }
-    }
-  }
-  if (output.includes("important")) return ["important"];
-  if (output.includes("normal")) return ["normal"];
-  return ["normal"];
 }

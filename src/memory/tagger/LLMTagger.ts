@@ -1,4 +1,5 @@
 import type { BlockTag } from "../../types.js";
+import { normalizeAllowedAiTags } from "./TagNormalizer.js";
 import type { MemoryBlock } from "../MemoryBlock.js";
 import { HeuristicTagger } from "./HeuristicTagger.js";
 import type { ITagger } from "./Tagger.js";
@@ -14,13 +15,14 @@ export interface LLMTaggerConfig {
   baseUrl?: string;
   timeoutMs?: number;
   importantThreshold: number;
+  allowedAiTags?: string[];
   onFallback?: (details: LLMFallbackDetails) => void;
 }
 
 export interface LLMTaggerOptions {
   providerName: string;
   defaultBaseUrl: string;
-  systemPrompt: string;
+  buildSystemPrompt: (allowedAiTags: string[]) => string;
 }
 
 interface ChatCompletionResponse {
@@ -40,6 +42,8 @@ export class LLMTagger implements ITagger {
   private readonly fallback: HeuristicTagger;
   private readonly timeoutMs: number;
   private readonly baseUrl: string;
+  private readonly allowedAiTags: string[];
+  private readonly systemPrompt: string;
 
   constructor(
     private readonly config: LLMTaggerConfig,
@@ -47,7 +51,12 @@ export class LLMTagger implements ITagger {
   ) {
     this.timeoutMs = config.timeoutMs ?? 10_000;
     this.baseUrl = config.baseUrl ?? options.defaultBaseUrl;
-    this.fallback = new HeuristicTagger({ importantThreshold: config.importantThreshold });
+    this.allowedAiTags = normalizeAllowedAiTags(config.allowedAiTags);
+    this.systemPrompt = options.buildSystemPrompt(this.allowedAiTags);
+    this.fallback = new HeuristicTagger({
+      importantThreshold: config.importantThreshold,
+      allowedAiTags: this.allowedAiTags
+    });
   }
 
   async tag(block: MemoryBlock): Promise<BlockTag[]> {
@@ -66,7 +75,7 @@ export class LLMTagger implements ITagger {
             model: this.config.model,
             temperature: 0,
             messages: [
-              { role: "system", content: this.options.systemPrompt },
+              { role: "system", content: this.systemPrompt },
               { role: "user", content: buildPrompt(block) }
             ]
           }),
@@ -81,7 +90,7 @@ export class LLMTagger implements ITagger {
       }
 
       const payload = parsePayload((await response.json()) as ChatCompletionResponse);
-      const tags = normalizeTags(payload, this.config.importantThreshold);
+      const tags = normalizeTags(payload, this.config.importantThreshold, this.allowedAiTags);
       if (tags.length > 0) return tags;
 
       this.reportFallback("empty_or_invalid_model_output", block.id);
@@ -142,22 +151,22 @@ function extractJsonObject(text: string): string | undefined {
   return text.slice(start, end + 1);
 }
 
-function normalizeTags(payload: TaggerPayload, threshold: number): BlockTag[] {
-  const raw = payload.tags ?? [];
-  const tags = new Set<BlockTag>();
-  for (const tag of raw) {
-    if (tag === "important" || tag === "normal") {
-      tags.add(tag);
-    }
+function normalizeTags(payload: TaggerPayload, threshold: number, allowedAiTags: string[]): BlockTag[] {
+  const allowed = new Set(allowedAiTags);
+  const output: string[] = [];
+
+  for (const rawTag of payload.tags ?? []) {
+    if (typeof rawTag !== "string") continue;
+    const tag = rawTag.trim().toLowerCase();
+    if (!tag || !allowed.has(tag) || output.includes(tag)) continue;
+    output.push(tag);
   }
+
   if (typeof payload.importantScore === "number" && Number.isFinite(payload.importantScore)) {
-    if (payload.importantScore >= threshold) {
-      tags.add("important");
-      tags.delete("normal");
+    if (payload.importantScore >= threshold && allowed.has("important")) {
+      return ["important"];
     }
   }
 
-  if (tags.has("important")) return ["important"];
-  if (tags.has("normal")) return ["normal"];
-  return [];
+  return output;
 }

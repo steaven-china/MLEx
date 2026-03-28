@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { stdout as output } from "node:process";
 
 import { createRuntime } from "../container.js";
+import type { RuntimeOptions } from "../container.js";
 import type { DeepPartial, AppConfig } from "../config.js";
 import type { IDebugTraceRecorder } from "../debug/DebugTraceRecorder.js";
 import {
@@ -64,7 +65,11 @@ const optionDescriptions = {
   maxEntries: i18n.t("cli.option.max_entries"),
   maxBytes: i18n.t("cli.option.max_bytes"),
   agents: i18n.t("cli.option.agents"),
-  showDrafts: i18n.t("cli.option.show_drafts")
+  showDrafts: i18n.t("cli.option.show_drafts"),
+  includeTagsIntro: i18n.t("cli.option.include_tags_intro"),
+  tagsIntro: i18n.t("cli.option.tags_intro"),
+  tagsToml: i18n.t("cli.option.tags_toml"),
+  tagsVars: i18n.t("cli.option.tags_vars")
 };
 
 const program = new Command();
@@ -116,10 +121,19 @@ program
   .option("--web-body-max-bytes <number>", optionDescriptions.webBodyMaxBytes)
   .option("--debug-trace <enabled>", optionDescriptions.debugTrace)
   .option("--debug-trace-max <number>", optionDescriptions.debugTraceMax)
+  .option("--include-tags-intro <enabled>", optionDescriptions.includeTagsIntro)
+  .option("--tags-intro <path>", optionDescriptions.tagsIntro)
+  .option("--tags-toml <path>", optionDescriptions.tagsToml)
+  .option("--tags-vars <csv>", optionDescriptions.tagsVars)
   .action(async (options) => {
     const host = asOptionalString(options.host) ?? "127.0.0.1";
     const preferredPort = parseOptionalNumber(asOptionalString(options.port)) ?? 8787;
-    const started = await startWebServerWithFallback(host, preferredPort, buildRuntimeOverrides(options));
+    const started = await startWebServerWithFallback(
+      host,
+      preferredPort,
+      buildRuntimeOverrides(options),
+      buildRuntimeOptions(options)
+    );
     output.write(`${i18n.t("cli.web.running", { url: started.url })}\n`);
     output.write(`${i18n.t("cli.web.stop_hint")}\n`);
 
@@ -198,8 +212,12 @@ program
   .option("--show-context", optionDescriptions.showContext, false)
   .option("--debug-trace <enabled>", optionDescriptions.debugTrace)
   .option("--debug-trace-max <number>", optionDescriptions.debugTraceMax)
+  .option("--include-tags-intro <enabled>", optionDescriptions.includeTagsIntro)
+  .option("--tags-intro <path>", optionDescriptions.tagsIntro)
+  .option("--tags-toml <path>", optionDescriptions.tagsToml)
+  .option("--tags-vars <csv>", optionDescriptions.tagsVars)
   .action(async (options) => {
-    const runtime = createRuntime(buildRuntimeOverrides(options));
+    const runtime = createRuntime(buildRuntimeOverrides(options), buildRuntimeOptions(options));
     const fileService = new ReadonlyFileService({ rootPath: process.cwd() });
     const traceRecorder = runtime.container.resolve<IDebugTraceRecorder>("debugTraceRecorder");
     const tui = new MlexTuiApp({
@@ -250,8 +268,12 @@ program
   .option("--proactive-require-evidence <enabled>", optionDescriptions.proactiveRequireEvidence)
   .option("--proactive-timer <enabled>", optionDescriptions.proactiveTimer)
   .option("--proactive-timer-interval-seconds <number>", optionDescriptions.proactiveTimerIntervalSeconds)
+  .option("--include-tags-intro <enabled>", optionDescriptions.includeTagsIntro)
+  .option("--tags-intro <path>", optionDescriptions.tagsIntro)
+  .option("--tags-toml <path>", optionDescriptions.tagsToml)
+  .option("--tags-vars <csv>", optionDescriptions.tagsVars)
   .action(async (file: string, options) => {
-    const runtime = createRuntime(buildRuntimeOverrides(options));
+    const runtime = createRuntime(buildRuntimeOverrides(options), buildRuntimeOptions(options));
     try {
       const content = await readFile(file, "utf8");
       const segments = content
@@ -302,8 +324,12 @@ program
   .option("--proactive-require-evidence <enabled>", optionDescriptions.proactiveRequireEvidence)
   .option("--proactive-timer <enabled>", optionDescriptions.proactiveTimer)
   .option("--proactive-timer-interval-seconds <number>", optionDescriptions.proactiveTimerIntervalSeconds)
+  .option("--include-tags-intro <enabled>", optionDescriptions.includeTagsIntro)
+  .option("--tags-intro <path>", optionDescriptions.tagsIntro)
+  .option("--tags-toml <path>", optionDescriptions.tagsToml)
+  .option("--tags-vars <csv>", optionDescriptions.tagsVars)
   .action(async (query: string, options) => {
-    const runtime = createRuntime(buildRuntimeOverrides(options));
+    const runtime = createRuntime(buildRuntimeOverrides(options), buildRuntimeOptions(options));
     try {
       if (options.stream) {
         await runtime.agent.respondStream(query, (token) => output.write(token));
@@ -351,6 +377,10 @@ program
   .option("--proactive-require-evidence <enabled>", optionDescriptions.proactiveRequireEvidence)
   .option("--proactive-timer <enabled>", optionDescriptions.proactiveTimer)
   .option("--proactive-timer-interval-seconds <number>", optionDescriptions.proactiveTimerIntervalSeconds)
+  .option("--include-tags-intro <enabled>", optionDescriptions.includeTagsIntro)
+  .option("--tags-intro <path>", optionDescriptions.tagsIntro)
+  .option("--tags-toml <path>", optionDescriptions.tagsToml)
+  .option("--tags-vars <csv>", optionDescriptions.tagsVars)
   .action(async (query: string, options) => {
     const workerCount = clampAgents(options.agents);
     const roles = buildRoles(workerCount);
@@ -372,6 +402,7 @@ program
     ].join("\n");
 
     const coordinator = createRuntime(buildRuntimeOverrides(options), {
+      ...buildRuntimeOptions(options),
       agentSystemPrompt: i18n.t("cli.swarm.coordinator_prompt")
     });
     try {
@@ -383,6 +414,15 @@ program
   });
 
 void program.parseAsync(process.argv);
+
+function buildRuntimeOptions(options: Record<string, unknown>): RuntimeOptions {
+  return {
+    includeTagsIntro: parseOptionalBoolean(asOptionalString(options.includeTagsIntro)),
+    tagsIntroPath: asOptionalString(options.tagsIntro),
+    tagsTomlPath: asOptionalString(options.tagsToml),
+    tagsTemplateVars: parseOptionalKvCsv(asOptionalString(options.tagsVars))
+  };
+}
 
 function buildRuntimeOverrides(options: Record<string, unknown>): DeepPartial<AppConfig> {
   return {
@@ -475,6 +515,24 @@ function parseOptionalCsv(value: string | undefined): string[] | undefined {
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
   return items.length > 0 ? items : undefined;
+}
+
+function parseOptionalKvCsv(value: string | undefined): Record<string, string> | undefined {
+  if (!value) return undefined;
+  const output: Record<string, string> = {};
+  const items = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  for (const item of items) {
+    const index = item.indexOf("=");
+    if (index <= 0) continue;
+    const key = item.slice(0, index).trim();
+    const rawValue = item.slice(index + 1).trim();
+    if (!key) continue;
+    output[key] = rawValue;
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
 }
 
 function formatFileList(entries: ReadonlyFileEntry[], pathInput: string): string {
@@ -578,6 +636,7 @@ async function runSwarmWorkers(
   return Promise.all(
     roles.map(async (role) => {
       const runtime = createRuntime(buildRuntimeOverrides(options), {
+        ...buildRuntimeOptions(options),
         agentSystemPrompt: role.systemPrompt
       });
       try {
@@ -599,13 +658,15 @@ async function runSwarmWorkers(
 async function startWebServerWithFallback(
   host: string,
   preferredPort: number,
-  runtimeOverrides: DeepPartial<AppConfig>
+  runtimeOverrides: DeepPartial<AppConfig>,
+  runtimeOptions: RuntimeOptions
 ): Promise<Awaited<ReturnType<typeof startWebServer>>> {
   try {
     return await startWebServer({
       host,
       port: preferredPort,
-      runtimeOverrides
+      runtimeOverrides,
+      runtimeOptions
     });
   } catch (error) {
     if (!isAddressInUse(error)) {
@@ -615,7 +676,8 @@ async function startWebServerWithFallback(
     return startWebServer({
       host,
       port: 0,
-      runtimeOverrides
+      runtimeOverrides,
+      runtimeOptions
     });
   }
 }

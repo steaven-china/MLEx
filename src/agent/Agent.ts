@@ -1,6 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
+import { loadUserTagsToml } from "../config/tagsToml.js";
+import { renderTagTemplate } from "./TagTemplateRenderer.js";
+
 import type { Context, MemoryEvent } from "../types.js";
 import type { I18n } from "../i18n/index.js";
 import { createId } from "../utils/id.js";
@@ -33,6 +36,10 @@ export interface AgentOptions {
   workspaceRoot?: string;
   includeIntroductionWhenNoMemory?: boolean;
   introductionPath?: string;
+  includeTagsIntro?: boolean;
+  tagsIntroPath?: string;
+  tagsTomlPath?: string;
+  tagsTemplateVars?: Record<string, string>;
   toolExecutor?: IAgentToolExecutor;
   traceRecorder?: IDebugTraceRecorder;
   proactivePlanner?: ProactiveDialoguePlanner;
@@ -50,6 +57,7 @@ export class Agent {
   private readonly toolExecutor?: IAgentToolExecutor;
   private readonly introduction?: string;
   private readonly includeIntroductionWhenNoMemory: boolean;
+  private readonly tagsIntroduction?: string;
   private readonly traceRecorder?: IDebugTraceRecorder;
   private readonly proactivePlanner?: ProactiveDialoguePlanner;
   private readonly proactiveActuator?: ProactiveActuator;
@@ -71,6 +79,13 @@ export class Agent {
         : loadAgentsGuidelines(options.agentsMdPath, options.workspaceRoot);
     this.introduction = loadIntroduction(options.introductionPath, options.workspaceRoot);
     this.includeIntroductionWhenNoMemory = options.includeIntroductionWhenNoMemory !== false;
+    this.tagsIntroduction = loadTagsIntroduction({
+      includeTagsIntro: options.includeTagsIntro,
+      tagsIntroPath: options.tagsIntroPath,
+      tagsTomlPath: options.tagsTomlPath,
+      tagsTemplateVars: options.tagsTemplateVars,
+      workspaceRoot: options.workspaceRoot
+    });
     this.toolExecutor = options.toolExecutor;
     this.traceRecorder = options.traceRecorder;
     this.proactivePlanner = options.proactivePlanner;
@@ -182,6 +197,11 @@ export class Agent {
     if (this.shouldInjectIntroduction(context)) {
       systemParts.push(
         `${this.i18n?.t("agent.introduction.title") ?? "=== INTRODUCTION (NO MEMORY BLOCKS AVAILABLE) ==="}\n${this.introduction}`
+      );
+    }
+    if (this.tagsIntroduction) {
+      systemParts.push(
+        `${this.i18n?.t("agent.tags_intro.title") ?? "=== TAGS INTRODUCTION ==="}\n${this.tagsIntroduction}`
       );
     }
     systemParts.push(context.formatted);
@@ -358,6 +378,51 @@ function loadIntroduction(customPath?: string, workspaceRoot?: string): string |
   candidates.add(resolve(root, "Introduction.md"));
 
   return readFirstNonEmpty(candidates, 6000);
+}
+
+function loadTagsIntroduction(options: {
+  includeTagsIntro?: boolean;
+  tagsIntroPath?: string;
+  tagsTomlPath?: string;
+  tagsTemplateVars?: Record<string, string>;
+  workspaceRoot?: string;
+}): string | undefined {
+  if (options.includeTagsIntro === false) return undefined;
+
+  const root = resolve(options.workspaceRoot ?? process.cwd());
+  const tagsToml = loadUserTagsToml({ filePath: options.tagsTomlPath });
+  const tagsTomlDoc = buildTagsTomlDoc(tagsToml);
+
+  const candidates = new Set<string>();
+  if (options.tagsIntroPath) {
+    candidates.add(resolve(options.tagsIntroPath));
+  }
+  candidates.add(resolve(root, "AgentDocs", "TagsIntro.md"));
+  candidates.add(resolve(root, "TagsIntro.md"));
+
+  const fileDoc = readFirstNonEmpty(candidates, 6000);
+  const mergedDoc = [tagsTomlDoc, fileDoc].filter((part): part is string => Boolean(part)).join("\n\n");
+  if (!mergedDoc) return undefined;
+
+  const vars = {
+    ...(tagsToml.vars ?? {}),
+    ...(options.tagsTemplateVars ?? {})
+  };
+  return renderTagTemplate(mergedDoc, vars);
+}
+
+function buildTagsTomlDoc(config: ReturnType<typeof loadUserTagsToml>): string | undefined {
+  const parts: string[] = [];
+  const intro = config.docs?.intro?.trim();
+  if (intro) {
+    parts.push(intro);
+  }
+  const items = config.docs?.item ?? [];
+  if (items.length > 0) {
+    parts.push(items.map((item) => `- ${item}`).join("\n"));
+  }
+  if (parts.length === 0) return undefined;
+  return parts.join("\n\n");
 }
 
 function readFirstNonEmpty(paths: Iterable<string>, maxLength: number): string | undefined {

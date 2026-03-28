@@ -101,6 +101,7 @@ export const EN_US_MESSAGES: MessageDictionary = {
   "web.api.error.feature_disabled": "feature is disabled",
   "agent.timer.wakeup_query": "continue current task",
   "agent.introduction.title": "=== INTRODUCTION (NO MEMORY BLOCKS AVAILABLE) ===",
+  "agent.tags_intro.title": "=== TAGS INTRODUCTION ===",
   "agent.tool.parse.invalid":
     "TOOL_RESULT {\"tool\":\"tool_call.parser\",\"ok\":false,\"content\":\"Invalid tool-call payload. Please return strict JSON with name and args (or tool/arguments).\"}",
   "agent.tool.round.limit":
@@ -208,6 +209,10 @@ export const EN_US_MESSAGES: MessageDictionary = {
   "cli.option.max_bytes": "max bytes to read",
   "cli.option.agents": "number of worker agents (2-5)",
   "cli.option.show_drafts": "hide each worker draft before final synthesis",
+  "cli.option.include_tags_intro": "true | false (inject TagsIntro section into system prompt)",
+  "cli.option.tags_intro": "path to TagsIntro.md template file",
+  "cli.option.tags_toml": "path to tags.toml (default ~/.mlex/tags.toml)",
+  "cli.option.tags_vars": "template vars CSV: key=value,key2=value2",
   "cli.web.description": "Start minimalist web UI",
   "cli.web.running": "MLEX web running at {url}",
   "cli.web.stop_hint": "Press Ctrl+C to stop.",

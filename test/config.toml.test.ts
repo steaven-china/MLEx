@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { readFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -27,27 +27,31 @@ describe("loadConfig with ~/.mlex/config.toml support", () => {
     expect(config.service.provider).toBe("rule-based");
   });
 
-  test("loads values from toml file", async () => {
+  test("creates default config and tags files when missing", async () => {
     const filePath = await makeTempPath();
-    await writeFile(
-      filePath,
-      [
-        "[service]",
-        'provider = "deepseek-reasoner"',
-        "",
-        "[manager]",
-        "searchTopK = 9",
-        "",
-        "[component]",
-        "searchSeedQueries = [\"alpha\", \"beta\"]"
-      ].join("\n"),
-      "utf8"
-    );
+    const tagsPath = path.join(path.dirname(filePath), "tags.toml");
 
     const config = loadConfig({}, { userTomlPath: filePath });
-    expect(config.service.provider).toBe("deepseek-reasoner");
-    expect(config.manager.searchTopK).toBe(9);
-    expect(config.component.searchSeedQueries).toEqual(["alpha", "beta"]);
+    expect(config.service.provider).toBe("rule-based");
+
+    const configSource = await readFile(filePath, "utf8");
+    expect(configSource).toContain("[service]");
+    expect(configSource).toContain('provider = "rule-based"');
+
+    const tagsSource = await readFile(tagsPath, "utf8");
+    expect(tagsSource).toContain("[docs]");
+    expect(tagsSource).toContain("[vars]");
+  });
+
+  test("does not overwrite existing config file", async () => {
+    const filePath = await makeTempPath();
+    await writeFile(filePath, ["[service]", 'provider = "openai"'].join("\n"), "utf8");
+
+    const config = loadConfig({}, { userTomlPath: filePath });
+    expect(config.service.provider).toBe("openai");
+
+    const source = await readFile(filePath, "utf8");
+    expect(source).toContain('provider = "openai"');
   });
 
   test("applies overrides above toml values", async () => {
@@ -107,7 +111,8 @@ describe("loadConfig with ~/.mlex/config.toml support", () => {
         'tagger = "deepseek"',
         'taggerModel = "deepseek-chat"',
         "taggerTimeoutMs = 7000",
-        "taggerImportantThreshold = 0.75"
+        "taggerImportantThreshold = 0.75",
+        'allowedAiTags = ["critical", "normal", "ops"]'
       ].join("\n"),
       "utf8"
     );
@@ -117,6 +122,49 @@ describe("loadConfig with ~/.mlex/config.toml support", () => {
     expect(config.component.taggerModel).toBe("deepseek-chat");
     expect(config.component.taggerTimeoutMs).toBe(7000);
     expect(config.component.taggerImportantThreshold).toBe(0.75);
+    expect(config.component.allowedAiTags).toEqual(["critical", "normal", "ops"]);
+  });
+
+  test("loads tags intro config from toml file", async () => {
+    const filePath = await makeTempPath();
+    await writeFile(
+      filePath,
+      [
+        "[component]",
+        "includeTagsIntro = false",
+        'tagsIntroPath = "AgentDocs/TagsIntro.md"',
+        'tagsTomlPath = "~/.mlex/tags.toml"',
+        "",
+        "[component.tagsTemplateVars]",
+        'team = "search"',
+        'owner = "ops"'
+      ].join("\n"),
+      "utf8"
+    );
+
+    const config = loadConfig({}, { userTomlPath: filePath });
+    expect(config.component.includeTagsIntro).toBe(false);
+    expect(config.component.tagsIntroPath).toBe("AgentDocs/TagsIntro.md");
+    expect(config.component.tagsTomlPath).toBe("~/.mlex/tags.toml");
+    expect(config.component.tagsTemplateVars).toEqual({ team: "search", owner: "ops" });
+  });
+
+  test("throws on invalid tagsTemplateVars value type", async () => {
+    const filePath = await makeTempPath();
+    await writeFile(filePath, ["[component.tagsTemplateVars]", "team = 1"].join("\n"), "utf8");
+
+    expect(() => loadConfig({}, { userTomlPath: filePath })).toThrowError(
+      /component\.tagsTemplateVars must be table<string>/
+    );
+  });
+
+  test("throws on invalid tags intro boolean type", async () => {
+    const filePath = await makeTempPath();
+    await writeFile(filePath, ["[component]", 'includeTagsIntro = "true"'].join("\n"), "utf8");
+
+    expect(() => loadConfig({}, { userTomlPath: filePath })).toThrowError(
+      /component\.includeTagsIntro must be boolean/
+    );
   });
 
   test("throws on invalid toml syntax", async () => {

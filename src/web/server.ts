@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { stat } from "node:fs/promises";
 
 import type { AppConfig, DeepPartial } from "../config.js";
+import type { RuntimeOptions } from "../container.js";
 import { createRuntime } from "../container.js";
 import type { IDebugTraceRecorder } from "../debug/DebugTraceRecorder.js";
 import { ReadonlyFileService } from "../files/ReadonlyFileService.js";
@@ -16,6 +17,7 @@ export interface WebServerOptions {
   host?: string;
   port?: number;
   runtimeOverrides?: DeepPartial<AppConfig>;
+  runtimeOptions?: RuntimeOptions;
 }
 
 export interface StartedWebServer {
@@ -40,7 +42,7 @@ interface DebugState {
 }
 
 export async function startWebServer(options: WebServerOptions = {}): Promise<StartedWebServer> {
-  const runtime = createRuntime(options.runtimeOverrides ?? {});
+  const runtime = createRuntime(options.runtimeOverrides ?? {}, options.runtimeOptions);
   const fileService = new ReadonlyFileService({ rootPath: process.cwd() });
   const debugState: DebugState = {};
   const host = options.host ?? "127.0.0.1";

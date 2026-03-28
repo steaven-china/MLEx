@@ -18,6 +18,7 @@ import { SemanticBoundaryChunkStrategy } from "./memory/chunking/SemanticBoundar
 import { HashEmbedder } from "./memory/embedder/HashEmbedder.js";
 import { HistoryMatchCalculator } from "./memory/management/HistoryMatchCalculator.js";
 import { buildTagger } from "./memory/tagger/taggerFactory.js";
+import { normalizeAllowedAiTags } from "./memory/tagger/TagNormalizer.js";
 import {
   CompressAction,
   ConflictAction,
@@ -103,6 +104,10 @@ export interface RuntimeOptions {
   workspaceRoot?: string;
   includeIntroductionWhenNoMemory?: boolean;
   introductionPath?: string;
+  includeTagsIntro?: boolean;
+  tagsIntroPath?: string;
+  tagsTomlPath?: string;
+  tagsTemplateVars?: Record<string, string>;
   enableAgentTools?: boolean;
 }
 
@@ -111,6 +116,11 @@ export function createRuntime(
   options: RuntimeOptions = {}
 ): Runtime {
   const config = loadConfig(overrides);
+  const envIncludeTagsIntro = parseOptionalBoolean(process.env.MLEX_INCLUDE_TAGS_INTRO);
+  const envTagsIntroPath = normalizeEnvString(process.env.MLEX_TAGS_INTRO);
+  const envTagsTomlPath = normalizeEnvString(process.env.MLEX_TAGS_TOML);
+  const envTagsTemplateVars = parseEnvTagTemplateVars(process.env);
+  const allowedAiTags = normalizeAllowedAiTags(config.component.allowedAiTags);
   const container = new Container();
   let sqliteDatabase: SQLiteDatabase | undefined;
 
@@ -137,7 +147,7 @@ export function createRuntime(
   });
   container.register("keywordIndex", () => new InvertedIndex());
   container.register("relationGraph", () => new RelationGraph());
-  container.register("blockStore", () => buildBlockStore(config, getSQLiteDatabase));
+  container.register("blockStore", () => buildBlockStore(config, getSQLiteDatabase, allowedAiTags));
   container.register("rawStore", () => buildRawStore(config, getSQLiteDatabase));
   container.register("relationStore", () => buildRelationStore(config, getSQLiteDatabase));
   container.register("vectorStore", () => {
@@ -182,7 +192,8 @@ export function createRuntime(
       rawStore: container.resolve("rawStore"),
       historyMatchCalculator: container.resolve("historyMatchCalculator"),
       retentionPolicy: container.resolve("retentionPolicy"),
-      tagger: container.resolve("tagger")
+      tagger: container.resolve("tagger"),
+      allowedAiTags
     });
   });
   container.register("contextAssembler", () => new ContextAssembler());
@@ -341,6 +352,14 @@ export function createRuntime(
       workspaceRoot: options.workspaceRoot,
       includeIntroductionWhenNoMemory: options.includeIntroductionWhenNoMemory,
       introductionPath: options.introductionPath,
+      includeTagsIntro: options.includeTagsIntro ?? envIncludeTagsIntro ?? config.component.includeTagsIntro,
+      tagsIntroPath: options.tagsIntroPath ?? envTagsIntroPath ?? config.component.tagsIntroPath,
+      tagsTomlPath: options.tagsTomlPath ?? envTagsTomlPath ?? config.component.tagsTomlPath,
+      tagsTemplateVars: {
+        ...(config.component.tagsTemplateVars ?? {}),
+        ...envTagsTemplateVars,
+        ...(options.tagsTemplateVars ?? {})
+      },
       toolExecutor: options.enableAgentTools === false ? undefined : container.resolve("toolExecutor"),
       traceRecorder: container.resolve("debugTraceRecorder"),
       proactivePlanner:
@@ -407,22 +426,29 @@ function buildChunkStrategy(config: AppConfig): IChunkStrategy {
   return new HybridChunkStrategy(fixed, semantic);
 }
 
-function buildBlockStore(config: AppConfig, getSQLiteDatabase: () => SQLiteDatabase) {
+function buildBlockStore(
+  config: AppConfig,
+  getSQLiteDatabase: () => SQLiteDatabase,
+  allowedAiTags: string[]
+) {
   if (config.component.storageBackend === "sqlite") {
-    return new SQLiteBlockStore(getSQLiteDatabase());
+    return new SQLiteBlockStore(getSQLiteDatabase(), allowedAiTags);
   }
   if (config.component.storageBackend === "lance") {
-    return new LanceBlockStore({ filePath: config.component.lanceFilePath });
+    return new LanceBlockStore({ filePath: config.component.lanceFilePath }, allowedAiTags);
   }
   if (config.component.storageBackend === "chroma") {
     if (!config.component.chromaBaseUrl || !config.component.chromaCollectionId) {
       throw new Error("MLEX_CHROMA_BASE_URL and MLEX_CHROMA_COLLECTION are required for chroma");
     }
-    return new ChromaBlockStore({
-      baseUrl: config.component.chromaBaseUrl,
-      collectionId: config.component.chromaCollectionId,
-      apiKey: config.component.chromaApiKey
-    });
+    return new ChromaBlockStore(
+      {
+        baseUrl: config.component.chromaBaseUrl,
+        collectionId: config.component.chromaCollectionId,
+        apiKey: config.component.chromaApiKey
+      },
+      allowedAiTags
+    );
   }
   return new InMemoryBlockStore();
 }
@@ -461,4 +487,30 @@ function buildGraphEmbedder(config: AppConfig): IGraphEmbedder {
     return new Node2VecGraphEmbedder();
   }
   return new GraphEmbedder();
+}
+
+function parseOptionalBoolean(value: string | undefined): boolean | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  return undefined;
+}
+
+function normalizeEnvString(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseEnvTagTemplateVars(env: NodeJS.ProcessEnv): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (!key.startsWith("MLEX_TAG_VAR_")) continue;
+    if (typeof value !== "string") continue;
+    const name = key.slice("MLEX_TAG_VAR_".length).trim();
+    if (!name) continue;
+    output[name] = value;
+  }
+  return output;
 }

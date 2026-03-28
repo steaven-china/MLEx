@@ -35,6 +35,60 @@ describe("OpenAITagger", () => {
     expect(tags).toEqual(["important"]);
   });
 
+  test("returns configured custom tag", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: '{"tags":["critical"],"importantScore":0.41}'
+            }
+          }
+        ]
+      })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tagger = new OpenAITagger({
+      apiKey: "test-key",
+      model: "gpt-4.1-nano",
+      importantThreshold: 0.6,
+      allowedAiTags: ["critical", "normal"]
+    });
+    const block = buildBlock("block_3", "一般信息");
+
+    const tags = await tagger.tag(block);
+    expect(tags).toEqual(["critical"]);
+  });
+
+  test("ignores unknown tags from model output", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: '{"tags":["unknown","critical"],"importantScore":0.35}'
+            }
+          }
+        ]
+      })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tagger = new OpenAITagger({
+      apiKey: "test-key",
+      model: "gpt-4.1-nano",
+      importantThreshold: 0.6,
+      allowedAiTags: ["critical", "normal"]
+    });
+    const block = buildBlock("block_4", "一般信息");
+
+    const tags = await tagger.tag(block);
+    expect(tags).toEqual(["critical"]);
+  });
+
   test("falls back to heuristic on request failure", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error("network fail"));
     vi.stubGlobal("fetch", fetchMock);
