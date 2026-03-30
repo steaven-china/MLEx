@@ -19,7 +19,7 @@ import type {
   ProactiveTriggerSource
 } from "../types.js";
 import { createId } from "../utils/id.js";
-import { extractKeywords, hasDirectionalIntent, normalizeText, tokenize } from "../utils/text.js";;
+import { cosineSimilarity, extractKeywords, hasDirectionalIntent, normalizeText, tokenize } from "../utils/text.js";
 import { AsyncRelationQueue } from "./relation/AsyncRelationQueue.js";
 import type { IRelationExtractor } from "./relation/RelationExtractor.js";
 import type { IRelationStore } from "./relation/IRelationStore.js";
@@ -146,7 +146,6 @@ export class PartitionMemoryManager implements IMemoryManager {
         relationStore: this.deps.relationStore,
         relationTimestampResolver: (block) => this.nextRelationTimestampMs(block.endTime),
         minConfidence: this.deps.config.relationMinConfidence,
-        allowedTypes: Object.values(RelationType),
         relationTypeAliases: {
           cause: RelationType.CAUSES,
           causes: RelationType.CAUSES,
@@ -245,6 +244,30 @@ export class PartitionMemoryManager implements IMemoryManager {
       directionalIntent
     });
     const scores = new Map(initial.scores);
+
+    // Give the un-sealed activeBlock a chance to surface in results.
+    // It has no indexed embedding/keywords yet, so we score it inline using the
+    // same signals the sealed blocks use: keyword overlap (Jaccard) + cosine
+    // similarity against a freshly computed embedding.  Only inject if the
+    // score clears the keyword minimum (> 0) to avoid noise on unrelated turns.
+    if (this.activeBlock.rawEvents.length > 0) {
+      const activeText = this.activeBlock.rawEvents.map((e) => e.text).join(" ");
+      const activeKeywords = extractKeywords(activeText, 8);
+      const activeEmbedding = this.embed(activeText);
+      const activeUnion = new Set([
+        ...keywords.map((s) => s.toLowerCase()),
+        ...activeKeywords.map((s) => s.toLowerCase())
+      ]).size;
+      const activeOverlap = keywords.filter((k) =>
+        activeKeywords.some((ak) => ak.toLowerCase() === k.toLowerCase())
+      ).length;
+      const keywordScore = activeUnion === 0 ? 0 : activeOverlap / activeUnion;
+      const vectorScore = cosineSimilarity(embedding, activeEmbedding);
+      const activeScore = keywordScore * 0.5 + vectorScore * 0.5;
+      if (activeScore > 0) {
+        scores.set(this.activeBlock.id, Math.max(scores.get(this.activeBlock.id) ?? 0, activeScore));
+      }
+    }
     this.applyPendingPrefetchBoost(scores);
     const prePredictionScores = new Map(scores);
     if (!hasLoggedPrePredictionScores.value) {
@@ -318,6 +341,10 @@ export class PartitionMemoryManager implements IMemoryManager {
 
     const blocks = await this.deps.blockStore.getMany(blockIds);
     const byId = new Map(blocks.map((block) => [block.id, block]));
+    // Also make the activeBlock available by id so it can surface as a ref.
+    if (this.activeBlock.rawEvents.length > 0) {
+      byId.set(this.activeBlock.id, this.activeBlock);
+    }
 
     const refs: BlockRef[] = [];
     for (const blockId of blockIds) {

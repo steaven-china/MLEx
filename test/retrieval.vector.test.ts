@@ -69,7 +69,7 @@ const INPUT: RetrievalInput = {
 };
 
 describe("VectorRetriever", () => {
-  test("falls back to original refs when min-score filter removes everything", async () => {
+  test("returns empty when min-score filter removes everything", async () => {
     const retriever = new VectorRetriever(
       new StaticVectorStore([makeRef("a", 0.2), makeRef("b", 0.1)]),
       new StaticBlockStore(["a", "b"]),
@@ -77,7 +77,8 @@ describe("VectorRetriever", () => {
     );
 
     const hits = await retriever.retrieve(INPUT);
-    expect(hits.map((hit) => hit.blockId)).toEqual(["a", "b"]);
+    // No fallback: when nothing clears the threshold, the result is empty.
+    expect(hits).toHaveLength(0);
   });
 
   test("keeps min-score filtering when at least one ref passes", async () => {

@@ -12,8 +12,11 @@ export class VectorRetriever implements IBlockRetriever {
 
   async retrieve(input: RetrievalInput): Promise<RetrievalHit[]> {
     const refs = await this.vectorStore.search(input.embedding, input.topK);
-    const filteredRefs = refs.filter((ref) => ref.score >= this.minScore);
-    const selectedRefs = filteredRefs.length > 0 ? filteredRefs : refs;
+    // Only return results that clear the minimum similarity threshold.
+    // Do NOT fall back to unfiltered results when nothing passes — returning
+    // low-quality vectors inflates noise in the fusion layer more than
+    // returning nothing does.
+    const selectedRefs = refs.filter((ref) => ref.score >= this.minScore);
     const blockIds = selectedRefs.map((ref) => ref.id);
     const blocks = await this.blockStore.getMany(blockIds);
     const blockMap = new Map(blocks.map((block) => [block.id, block]));

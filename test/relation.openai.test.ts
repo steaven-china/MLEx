@@ -39,6 +39,35 @@ describe("OpenAIRelationExtractor", () => {
     expect(relations[0]?.type).toBe("CONTEXT");
   });
 
+  test("accepts empty endpoint and keyword relation type", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content:
+                '{"relations":[{"src":"","dst":"block_c1","type":"name","confidence":0.82},{"src":"block_n1","dst":"","type":"events","confidence":0.61}]}'
+            }
+          }
+        ]
+      })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const extractor = new OpenAIRelationExtractor({
+      apiKey: "test-key",
+      model: "gpt-4.1-nano"
+    });
+    const current = buildBlock("block_c1", "当前任务：支付模块问题复盘");
+    const neighbors = [buildBlock("block_n1", "历史背景：支付重试与幂等配置")];
+
+    const relations = await extractor.extract(current, neighbors);
+    expect(relations).toHaveLength(2);
+    expect(relations.some((relation) => relation.src === "" && relation.dst === "block_c1" && relation.type === "name")).toBe(true);
+    expect(relations.some((relation) => relation.src === "block_n1" && relation.dst === "" && relation.type === "events")).toBe(true);
+  });
+
   test("falls back to heuristic extractor on API failure", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error("network fail"));
     vi.stubGlobal("fetch", fetchMock);

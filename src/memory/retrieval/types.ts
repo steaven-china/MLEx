@@ -10,6 +10,12 @@ export interface RetrievalInput {
   topK: number;
   seedBlockIds?: string[];
   direction?: TraverseDirection;
+  /**
+   * Relation types to filter graph traversal.
+   * - `undefined` (default): uses the retriever's built-in default types (CONTEXT, FOLLOWS).
+   * - `[]` (empty array): **no filter — all relation types are traversed**.
+   * - Non-empty array: only the listed types are traversed.
+   */
   relationTypes?: RelationType[];
   depth?: number;
 }

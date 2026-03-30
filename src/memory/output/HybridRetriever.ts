@@ -1,4 +1,4 @@
-import type { DirectionalIntent, ManagerConfig } from "../../types.js";
+import type { DirectionalIntent, ManagerConfig, RelationType } from "../../types.js";
 import type { FusionRetriever } from "../retrieval/FusionRetriever.js";
 import type { GraphRetriever } from "../retrieval/GraphRetriever.js";
 
@@ -42,20 +42,31 @@ export class HybridRetriever {
     let graphHitIds: string[] = [];
     let graphHitConfidenceAvg = 0;
 
-    if (input.directionalIntent && this.config.enableRelationExpansion) {
+    if (this.config.enableRelationExpansion) {
       const seedIds = [...semanticSeedIds];
       if (input.activeBlockId) {
         seedIds.push(input.activeBlockId);
       }
+
+      // When a directional intent is present, honour its direction/types/depth.
+      // For all other queries do a shallow bidirectional expansion on the two
+      // most common relation types (FOLLOWS + CONTEXT) so the graph always
+      // participates in retrieval, not only on explicitly relational queries.
+      const direction = input.directionalIntent?.direction ?? "both";
+      const relationTypes: RelationType[] =
+        input.directionalIntent?.relationTypes ??
+        ([] as RelationType[]); // empty = all types accepted by GraphRetriever
+      const depth = input.directionalIntent?.depth ?? 1;
+
       const graphHits = await this.graphRetriever.retrieve({
         query: input.query,
         keywords: input.keywords,
         embedding: input.embedding,
         topK: this.config.graphExpansionTopK,
         seedBlockIds: seedIds,
-        direction: input.directionalIntent.direction,
-        relationTypes: input.directionalIntent.relationTypes,
-        depth: input.directionalIntent.depth
+        direction,
+        relationTypes,
+        depth
       });
       graphHitIds = graphHits.map((hit) => hit.blockId);
       graphHitConfidenceAvg =

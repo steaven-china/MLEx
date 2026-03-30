@@ -39,6 +39,35 @@ describe("DeepSeekRelationExtractor", () => {
     expect(relations[0]?.type).toBe("FOLLOWS");
   });
 
+  test("accepts empty endpoint and keyword relation type", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content:
+                '{"relations":[{"src":"","dst":"block_c1","type":"name","confidence":0.76},{"src":"block_n1","dst":"","type":"events","confidence":0.66}]}'
+            }
+          }
+        ]
+      })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const extractor = new DeepSeekRelationExtractor({
+      apiKey: "test-key",
+      model: "deepseek-reasoner"
+    });
+    const current = buildBlock("block_c1", "当前：修复支付链路");
+    const neighbors = [buildBlock("block_n1", "上一阶段：需求分析")];
+
+    const relations = await extractor.extract(current, neighbors);
+    expect(relations).toHaveLength(2);
+    expect(relations.some((relation) => relation.src === "" && relation.dst === "block_c1" && relation.type === "name")).toBe(true);
+    expect(relations.some((relation) => relation.src === "block_n1" && relation.dst === "" && relation.type === "events")).toBe(true);
+  });
+
   test("falls back to heuristic extractor on API failure", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error("network fail"));
     vi.stubGlobal("fetch", fetchMock);

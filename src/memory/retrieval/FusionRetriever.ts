@@ -7,58 +7,54 @@ export interface WeightedRetriever {
   weight: number;
 }
 
+/**
+ * Reciprocal Rank Fusion (RRF) based multi-retriever fusion.
+ *
+ * RRF score for a document d across retrievers:
+ *   score(d) = Σ_r  weight_r / (k + rank_r(d))
+ *
+ * where k=60 is the standard smoothing constant that prevents top-ranked
+ * documents from dominating excessively.  Using rank rather than raw scores
+ * eliminates cross-retriever score scale differences (keyword overlap [0,1]
+ * vs cosine similarity [0,1] with different effective ranges).
+ *
+ * Documents appearing in multiple retrievers naturally get higher scores.
+ */
 export class FusionRetriever implements IBlockRetriever {
+  private static readonly RRF_K = 60;
+
   constructor(private readonly retrievers: WeightedRetriever[]) {}
 
   async retrieve(input: RetrievalInput): Promise<RetrievalHit[]> {
-    const merged = new Map<
-      string,
-      {
-        hit: RetrievalHit;
-        baseScore: number;
-        rankScore: number;
-        sourceCount: number;
-      }
-    >();
-    const rankK = 10;
-    const rankWeight = 0.35;
+    const rrfScores = new Map<string, number>();
+    const hitMeta = new Map<string, { hit: RetrievalHit; sourceCount: number }>();
 
     for (const item of this.retrievers) {
       const hits = await item.retriever.retrieve(input);
-      for (let index = 0; index < hits.length; index += 1) {
-        const hit = hits[index];
-        const weightedScore = hit.score * item.weight;
-        const rankScore = item.weight / (rankK + index + 1);
-        const existing = merged.get(hit.blockId);
+      for (let rank = 0; rank < hits.length; rank += 1) {
+        const hit = hits[rank];
+        const rrf = item.weight / (FusionRetriever.RRF_K + rank + 1);
+        rrfScores.set(hit.blockId, (rrfScores.get(hit.blockId) ?? 0) + rrf);
+        const existing = hitMeta.get(hit.blockId);
         if (!existing) {
-          merged.set(hit.blockId, {
-            hit: {
-              ...hit,
-              source: hit.source,
-              score: weightedScore + rankScore * rankWeight
-            },
-            baseScore: weightedScore,
-            rankScore,
-            sourceCount: 1
-          });
-          continue;
+          hitMeta.set(hit.blockId, { hit: { ...hit }, sourceCount: 1 });
+        } else {
+          existing.sourceCount += 1;
+          if (!existing.hit.block && hit.block) existing.hit.block = hit.block;
         }
-        existing.baseScore += weightedScore;
-        existing.rankScore += rankScore;
-        existing.sourceCount += 1;
-        existing.hit.score = existing.baseScore + existing.rankScore * rankWeight;
-        if (!existing.hit.block && hit.block) existing.hit.block = hit.block;
       }
     }
 
-    return [...merged.values()]
-      .sort((left, right) => {
-        if (right.hit.score !== left.hit.score) {
-          return right.hit.score - left.hit.score;
-        }
-        return right.sourceCount - left.sourceCount;
+    return [...hitMeta.entries()]
+      .map(([blockId, meta]) => ({
+        ...meta.hit,
+        score: rrfScores.get(blockId) ?? 0
+      }))
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return (hitMeta.get(b.blockId)?.sourceCount ?? 0) -
+               (hitMeta.get(a.blockId)?.sourceCount ?? 0);
       })
-      .map((entry) => entry.hit)
       .slice(0, input.topK);
   }
 }

@@ -63,19 +63,43 @@ async function assertContract(store: IRelationStore): Promise<void> {
     timestamp: 130,
     confidence: 0.6
   });
+  await store.add({
+    src: "",
+    dst: "b",
+    type: "name",
+    timestamp: 140,
+    confidence: 0.7
+  });
+  await store.add({
+    src: "a",
+    dst: "",
+    type: "events",
+    timestamp: 150,
+    confidence: 0.8
+  });
 
   const outgoingA = await store.listOutgoing("a");
   const ab = outgoingA.find((relation) => relation.dst === "b" && relation.type === RelationType.CONTEXT);
 
-  expect(outgoingA).toHaveLength(1);
+  expect(outgoingA).toHaveLength(2);
+  expect(outgoingA.some((relation) => relation.dst === "" && relation.type === "events")).toBe(true);
   expect(ab?.timestamp).toBe(120);
   expect(ab?.confidence).toBe(0.9);
 
   const incomingB = await store.listIncoming("b");
   expect(incomingB.some((relation) => relation.src === "a" && relation.type === RelationType.CONTEXT)).toBe(true);
+  expect(incomingB.some((relation) => relation.src === "" && relation.type === "name")).toBe(true);
+
+  const outgoingEmpty = await store.listOutgoing("");
+  expect(outgoingEmpty.some((relation) => relation.dst === "b" && relation.type === "name")).toBe(true);
+
+  const incomingEmpty = await store.listIncoming("");
+  expect(incomingEmpty.some((relation) => relation.src === "a" && relation.type === "events")).toBe(true);
 
   const all = await store.listAll();
-  expect(all).toHaveLength(2);
+  expect(all).toHaveLength(4);
   expect(all.some((relation) => relation.src === "a" && relation.dst === "b")).toBe(true);
   expect(all.some((relation) => relation.src === "b" && relation.dst === "c")).toBe(true);
+  expect(all.some((relation) => relation.src === "" && relation.dst === "b" && relation.type === "name")).toBe(true);
+  expect(all.some((relation) => relation.src === "a" && relation.dst === "" && relation.type === "events")).toBe(true);
 }

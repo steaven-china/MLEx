@@ -4,7 +4,7 @@ import { BuiltinAgentToolExecutor } from "../src/agent/AgentToolExecutor.js";
 import type { IMemoryManager } from "../src/memory/IMemoryManager.js";
 import type { ISearchProvider, SearchQuery, SearchResponse } from "../src/search/ISearchProvider.js";
 import type { IWebPageFetcher, WebPageFetchResult } from "../src/search/IWebPageFetcher.js";
-import type { BlockRef, Context, MemoryEvent } from "../src/types.js";
+import type { BlockRef, Context, MemoryEvent, RelationLabel } from "../src/types.js";
 import { RelationType } from "../src/types.js";
 
 class FakeMemoryManager implements IMemoryManager {
@@ -62,7 +62,7 @@ class FakeRelationStore {
   public relations: Array<{
     src: string;
     dst: string;
-    type: RelationType;
+    type: RelationLabel;
     timestamp: number;
     confidence?: number;
   }> = [];
@@ -70,7 +70,7 @@ class FakeRelationStore {
   async add(relation: {
     src: string;
     dst: string;
-    type: RelationType;
+    type: RelationLabel;
     timestamp: number;
     confidence?: number;
   }): Promise<void> {

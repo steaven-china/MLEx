@@ -243,6 +243,7 @@ function mapComponent(value: unknown, filePath: string, fieldPath: string): Deep
   assignString(output, "locale", table.locale, filePath, `${fieldPath}.locale`);
   assignString(output, "chunkStrategy", table.chunkStrategy, filePath, `${fieldPath}.chunkStrategy`);
   assignString(output, "storageBackend", table.storageBackend, filePath, `${fieldPath}.storageBackend`);
+  assignBoolean(output, "sqliteWorkerEnabled", table.sqliteWorkerEnabled, filePath, `${fieldPath}.sqliteWorkerEnabled`);
   assignString(output, "sqliteFilePath", table.sqliteFilePath, filePath, `${fieldPath}.sqliteFilePath`);
   assignString(output, "lanceFilePath", table.lanceFilePath, filePath, `${fieldPath}.lanceFilePath`);
   assignString(output, "chromaBaseUrl", table.chromaBaseUrl, filePath, `${fieldPath}.chromaBaseUrl`);

@@ -7,7 +7,7 @@ import type { I18n } from "../i18n/index.js";
 import { ReadonlyFileService } from "../files/ReadonlyFileService.js";
 import type { IFileAccessRecorder } from "../memory/file/FileAccessRecorder.js";
 import type { IMemoryManager } from "../memory/IMemoryManager.js";
-import { RelationType, type SearchAugmentMode } from "../types.js";
+import { RelationType, type RelationLabel, type SearchAugmentMode } from "../types.js";
 import type { ISearchProvider, SearchResponse } from "../search/ISearchProvider.js";
 import type { IWebPageFetcher } from "../search/IWebPageFetcher.js";
 import { createId } from "../utils/id.js";
@@ -40,7 +40,7 @@ export interface BuiltinAgentToolExecutorConfig {
     add: (relation: {
       src: string;
       dst: string;
-      type: RelationType;
+      type: RelationLabel;
       timestamp: number;
       confidence?: number;
     }) => Promise<void> | void;

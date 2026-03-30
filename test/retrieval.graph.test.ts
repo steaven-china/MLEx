@@ -143,6 +143,47 @@ describe("GraphRetriever", () => {
     expect(elapsedMs).toBeLessThan(1500);
   });
 
+  test("traverses through empty node and only returns block hits", async () => {
+    const graph = new RelationGraph();
+    const relationStore = new InMemoryRelationStore();
+    const blockStore = new InMemoryBlockStore();
+    const retriever = new GraphRetriever(graph, relationStore, blockStore);
+
+    blockStore.upsert(new MemoryBlock("seed"));
+    blockStore.upsert(new MemoryBlock("b"));
+
+    graph.addRelation("seed", "", "events");
+    graph.addRelation("", "b", "name");
+
+    relationStore.add({
+      src: "seed",
+      dst: "",
+      type: "events",
+      timestamp: Date.now(),
+      confidence: 0.95
+    });
+    relationStore.add({
+      src: "",
+      dst: "b",
+      type: "name",
+      timestamp: Date.now(),
+      confidence: 0.88
+    });
+
+    const hits = await retriever.retrieve({
+      query: "chain",
+      keywords: [],
+      embedding: [],
+      topK: 10,
+      seedBlockIds: ["seed"],
+      direction: "outgoing",
+      relationTypes: [],
+      depth: 2
+    });
+
+    expect(hits.map((hit) => hit.blockId)).toEqual(["b"]);
+  });
+
   test("ignores file nodes in graph hits", async () => {
     const graph = new RelationGraph();
     const relationStore = new InMemoryRelationStore();

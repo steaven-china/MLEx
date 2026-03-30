@@ -1,4 +1,4 @@
-import { RelationType } from "../../types.js";
+import { RelationType, type RelationLabel } from "../../types.js";
 import { RelationGraph } from "../RelationGraph.js";
 import type { IRelationStore } from "../relation/IRelationStore.js";
 import type { IBlockStore } from "../store/IBlockStore.js";
@@ -16,6 +16,7 @@ export class GraphRetriever implements IBlockRetriever {
     if (!input.seedBlockIds || input.seedBlockIds.length === 0) return [];
     const seedSet = new Set(input.seedBlockIds);
     const direction = input.direction ?? "both";
+    // [] means "traverse all types"; undefined falls back to the default set below.
     const relationTypes = input.relationTypes ?? [RelationType.CONTEXT, RelationType.FOLLOWS];
     const depth = input.depth ?? 1;
     const traversalNodes = this.collectTraversalNodes({
@@ -64,8 +65,9 @@ export class GraphRetriever implements IBlockRetriever {
     relationTypes: RelationType[];
   }): Promise<Map<string, number>> {
     const { nodeIds, direction, relationTypes } = input;
-    const allowType = (type: RelationType): boolean =>
-      relationTypes.length === 0 || relationTypes.includes(type);
+    // Empty array = accept all types; non-empty = filter to listed types.
+    const allowType = (type: RelationLabel): boolean =>
+      relationTypes.length === 0 || relationTypes.includes(type as RelationType);
 
     const map = new Map<string, number>();
     const outgoingNeeded = direction === "outgoing" || direction === "both";
@@ -120,8 +122,9 @@ export class GraphRetriever implements IBlockRetriever {
     relationTypes: RelationType[];
     depth: number;
   }): Set<string> {
-    const allowType = (type: RelationType): boolean =>
-      input.relationTypes.length === 0 || input.relationTypes.includes(type);
+    // Empty array = accept all types; non-empty = filter to listed types.
+    const allowType = (type: RelationLabel): boolean =>
+      input.relationTypes.length === 0 || input.relationTypes.includes(type as RelationType);
     const visited = new Set(input.seedIds);
     let active = new Set(input.seedIds);
 
@@ -161,8 +164,9 @@ export class GraphRetriever implements IBlockRetriever {
     depth: number;
     confidenceMap: Map<string, number>;
   }): Map<string, number> {
-    const allowType = (type: RelationType): boolean =>
-      input.relationTypes.length === 0 || input.relationTypes.includes(type);
+    // Empty array = accept all types; non-empty = filter to listed types.
+    const allowType = (type: RelationLabel): boolean =>
+      input.relationTypes.length === 0 || input.relationTypes.includes(type as RelationType);
     const frontier = new Map<string, number>();
     const accumulated = new Map<string, number>();
     const decay = 0.88;
@@ -175,7 +179,7 @@ export class GraphRetriever implements IBlockRetriever {
     for (let step = 1; step <= input.depth; step += 1) {
       const next = new Map<string, number>();
       for (const [nodeId, nodeScore] of active.entries()) {
-        const edges: Array<{ target: string; type: RelationType; confidence: number }> = [];
+        const edges: Array<{ target: string; type: RelationLabel; confidence: number }> = [];
 
         if (input.direction === "outgoing" || input.direction === "both") {
           for (const edge of this.graph.getOutgoingTyped(nodeId)) {
@@ -215,7 +219,7 @@ export class GraphRetriever implements IBlockRetriever {
   }
 }
 
-function edgeKey(src: string, dst: string, type: RelationType): string {
+function edgeKey(src: string, dst: string, type: RelationLabel): string {
   return `${src}|${dst}|${type}`;
 }
 
@@ -223,7 +227,7 @@ function resolveConfidence(
   table: Map<string, number>,
   src: string,
   dst: string,
-  type: RelationType
+  type: RelationLabel
 ): number {
   return table.get(edgeKey(src, dst, type)) ?? defaultConfidence(type);
 }
@@ -233,7 +237,7 @@ function clampConfidence(value: number): number {
   return Math.max(0.05, Math.min(1, value));
 }
 
-function defaultConfidence(type: RelationType): number {
+function defaultConfidence(type: RelationLabel): number {
   if (type === RelationType.FOLLOWS) return 0.9;
   if (type === RelationType.CAUSES) return 0.75;
   if (type === RelationType.PARENT_TASK || type === RelationType.CHILD_TASK) return 0.7;

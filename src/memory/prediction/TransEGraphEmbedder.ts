@@ -1,4 +1,4 @@
-import { RelationType } from "../../types.js";
+import { RelationType, type RelationLabel } from "../../types.js";
 import type { RelationGraph } from "../RelationGraph.js";
 import type { MemoryBlock } from "../MemoryBlock.js";
 import type { GraphEmbeddingResult, IGraphEmbedder } from "./GraphEmbedder.js";
@@ -62,14 +62,26 @@ export class TransEGraphEmbedder implements IGraphEmbedder {
   }
 }
 
-function relationTypeVector(type: RelationType, dimension: number): number[] {
-  const seed = Object.values(RelationType).indexOf(type) + 1;
+function relationTypeVector(type: RelationLabel, dimension: number): number[] {
+  const seed = relationTypeSeed(type);
   const vector = new Array(dimension).fill(0);
   for (let index = 0; index < dimension; index += 1) {
     const value = Math.sin((seed * (index + 1)) / 17) * 0.1;
     vector[index] = value;
   }
   return normalize(vector);
+}
+
+function relationTypeSeed(type: RelationLabel): number {
+  const knownSeed = Object.values(RelationType).indexOf(type as RelationType) + 1;
+  if (knownSeed > 0) return knownSeed;
+  const raw = String(type);
+  if (raw.length === 0) return 1;
+  let hash = 0;
+  for (let index = 0; index < raw.length; index += 1) {
+    hash = (hash * 31 + raw.charCodeAt(index)) >>> 0;
+  }
+  return (hash % 10_000) + 1;
 }
 
 function resolveDimension(blocks: MemoryBlock[]): number {

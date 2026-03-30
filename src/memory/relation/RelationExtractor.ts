@@ -1,11 +1,11 @@
-import { RelationType } from "../../types.js";
+import { RelationType, type RelationLabel } from "../../types.js";
 import { extractKeywords, normalizeText } from "../../utils/text.js";
 import type { MemoryBlock } from "../MemoryBlock.js";
 
 export interface ExtractedRelation {
   src: string;
   dst: string;
-  type: RelationType;
+  type: RelationLabel;
   confidence: number;
 }
 

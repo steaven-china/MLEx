@@ -8,15 +8,22 @@ export class HeuristicSummarizer implements ISummarizer {
 
     const joined = events.map((event) => `${event.role}: ${event.text}`).join(" ");
     const keywords = extractKeywords(joined, 6);
-    const first = events[0]?.text ?? "";
-    const last = events[events.length - 1]?.text ?? "";
 
-    const preview = [first, last]
-      .filter(Boolean)
-      .map((text) => text.slice(0, 80).replace(/\s+/g, " ").trim())
-      .join(" | ");
+    // Prioritise user messages — they carry the original intent and topic.
+    // Take up to 3 lines: user events first, then other roles, each clipped to
+    // 120 chars so the summary stays readable without growing unbounded.
+    const userEvents = events.filter((e) => e.role === "user");
+    const otherEvents = events.filter((e) => e.role !== "user");
+    const selected = [...userEvents, ...otherEvents].slice(0, 3);
 
+    const lines = selected.map((e) => {
+      const text = e.text.replace(/\s+/g, " ").trim();
+      const clipped = text.length > 120 ? `${text.slice(0, 120)}…` : text;
+      return `[${e.role}] ${clipped}`;
+    });
+
+    const preview = lines.join("\n");
     if (keywords.length === 0) return preview;
-    return `${preview} | keywords: ${keywords.join(", ")}`;
+    return `${preview}\nkeywords: ${keywords.join(", ")}`;
   }
 }

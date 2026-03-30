@@ -1,10 +1,10 @@
-import type { BlockId, RelationType, TraverseDirection } from "../types.js";
+import type { BlockId, RelationLabel, TraverseDirection } from "../types.js";
 
 export class RelationGraph {
-  private outEdges = new Map<BlockId, Map<BlockId, Set<RelationType>>>();
-  private inEdges = new Map<BlockId, Map<BlockId, Set<RelationType>>>();
+  private outEdges = new Map<BlockId, Map<BlockId, Set<RelationLabel>>>();
+  private inEdges = new Map<BlockId, Map<BlockId, Set<RelationLabel>>>();
 
-  addRelation(src: BlockId, dst: BlockId, type: RelationType): void {
+  addRelation(src: BlockId, dst: BlockId, type: RelationLabel): void {
     if (!this.outEdges.has(src)) this.outEdges.set(src, new Map());
     if (!this.inEdges.has(dst)) this.inEdges.set(dst, new Map());
     const outTable = this.outEdges.get(src);
@@ -18,7 +18,7 @@ export class RelationGraph {
     inTable.get(src)?.add(type);
   }
 
-  getOutgoing(src: BlockId, type?: RelationType): Set<BlockId> {
+  getOutgoing(src: BlockId, type?: RelationLabel): Set<BlockId> {
     const edges = this.outEdges.get(src);
     if (!edges) return new Set();
     const result = new Set<BlockId>();
@@ -28,7 +28,7 @@ export class RelationGraph {
     return result;
   }
 
-  getIncoming(dst: BlockId, type?: RelationType): Set<BlockId> {
+  getIncoming(dst: BlockId, type?: RelationLabel): Set<BlockId> {
     const edges = this.inEdges.get(dst);
     if (!edges) return new Set();
     const result = new Set<BlockId>();
@@ -38,10 +38,10 @@ export class RelationGraph {
     return result;
   }
 
-  getOutgoingTyped(src: BlockId): Array<{ blockId: BlockId; type: RelationType }> {
+  getOutgoingTyped(src: BlockId): Array<{ blockId: BlockId; type: RelationLabel }> {
     const edges = this.outEdges.get(src);
     if (!edges) return [];
-    const result: Array<{ blockId: BlockId; type: RelationType }> = [];
+    const result: Array<{ blockId: BlockId; type: RelationLabel }> = [];
     for (const [blockId, types] of edges.entries()) {
       for (const type of types.values()) {
         result.push({ blockId, type });
@@ -50,10 +50,10 @@ export class RelationGraph {
     return result;
   }
 
-  getIncomingTyped(dst: BlockId): Array<{ blockId: BlockId; type: RelationType }> {
+  getIncomingTyped(dst: BlockId): Array<{ blockId: BlockId; type: RelationLabel }> {
     const edges = this.inEdges.get(dst);
     if (!edges) return [];
-    const result: Array<{ blockId: BlockId; type: RelationType }> = [];
+    const result: Array<{ blockId: BlockId; type: RelationLabel }> = [];
     for (const [blockId, types] of edges.entries()) {
       for (const type of types.values()) {
         result.push({ blockId, type });
@@ -65,11 +65,11 @@ export class RelationGraph {
   traverse(
     start: BlockId,
     direction: TraverseDirection,
-    types: RelationType[] = [],
+    types: RelationLabel[] = [],
     depth = 1
   ): Set<BlockId> {
     if (depth <= 0) return new Set();
-    const allowType = (type: RelationType): boolean =>
+    const allowType = (type: RelationLabel): boolean =>
       types.length === 0 || types.includes(type);
 
     const visited = new Set<BlockId>([start]);

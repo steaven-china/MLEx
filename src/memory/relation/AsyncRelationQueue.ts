@@ -59,16 +59,22 @@ export class AsyncRelationQueue {
           const relations = await this.extractor.extract(block, neighbors);
           const normalizedRelations = this.normalizeRelations(relations);
           for (const relation of normalizedRelations) {
-            this.graph.addRelation(relation.src, relation.dst, relation.type);
-            const timestamp =
-              this.options.relationTimestampResolver?.(block, relation) ?? Date.now();
-            await this.options.relationStore?.add({
-              src: relation.src,
-              dst: relation.dst,
-              type: relation.type,
-              confidence: relation.confidence,
-              timestamp
-            });
+            try {
+              const timestamp =
+                this.options.relationTimestampResolver?.(block, relation) ?? Date.now();
+              // Persist first; only add to in-memory graph after store succeeds.
+              // This prevents graph/store divergence on store write failure.
+              await this.options.relationStore?.add({
+                src: relation.src,
+                dst: relation.dst,
+                type: relation.type,
+                confidence: relation.confidence,
+                timestamp
+              });
+              this.graph.addRelation(relation.src, relation.dst, relation.type);
+            } catch (relationError) {
+              this.options.onError?.(relationError);
+            }
           }
         } catch (error) {
           this.options.onError?.(error);
@@ -113,11 +119,17 @@ export class AsyncRelationQueue {
       if (!normalizedType) continue;
       if (allowedTypes && !allowedTypes.has(normalizedType)) continue;
 
+      const src = relation.src.trim();
+      const dst = relation.dst.trim();
+      if (src.length === 0 && dst.length === 0) continue;
+
       const confidence = Math.max(0, Math.min(1, relation.confidence));
       if (confidence < minConfidence) continue;
 
       const normalized: ExtractedRelation = {
         ...relation,
+        src,
+        dst,
         type: normalizedType,
         confidence
       };
@@ -135,7 +147,9 @@ export class AsyncRelationQueue {
     type: string,
     aliases: Partial<Record<string, ExtractedRelation["type"]>>
   ): ExtractedRelation["type"] | undefined {
-    const canonical = aliases[type] ?? aliases[type.toUpperCase()] ?? (type as ExtractedRelation["type"]);
-    return canonical;
+    const canonical = aliases[type] ?? aliases[type.toUpperCase()] ?? type;
+    const normalized = String(canonical).trim();
+    if (normalized.length === 0) return undefined;
+    return normalized as ExtractedRelation["type"];
   }
 }

@@ -78,9 +78,28 @@ export function tokenize(text: string): string[] {
     .filter(Boolean);
 }
 
+// CJK Unified Ideographs + common CJK extensions — each character ≈ 1.5 tokens.
+// ASCII/Latin text uses the classic 4-characters-per-token heuristic.
+// Mixed text is weighted by CJK character ratio so estimates stay accurate for
+// bilingual conversations without needing a real tokenizer.
 export function estimateTokens(text: string): number {
   if (!text) return 0;
-  return Math.max(1, Math.ceil(text.length / 4));
+  let cjkCount = 0;
+  for (const cp of text) {
+    const code = cp.codePointAt(0) ?? 0;
+    if (
+      (code >= 0x4e00 && code <= 0x9fff) || // CJK Unified Ideographs
+      (code >= 0x3400 && code <= 0x4dbf) || // CJK Extension A
+      (code >= 0x20000 && code <= 0x2a6df) || // CJK Extension B
+      (code >= 0x3000 && code <= 0x303f) || // CJK Symbols & Punctuation
+      (code >= 0xff00 && code <= 0xffef) // Halfwidth/Fullwidth Forms
+    ) {
+      cjkCount += 1;
+    }
+  }
+  const latinLen = text.length - cjkCount;
+  const tokens = cjkCount * 1.5 + latinLen / 4;
+  return Math.max(1, Math.ceil(tokens));
 }
 
 export function extractKeywords(text: string, topN = 8): string[] {

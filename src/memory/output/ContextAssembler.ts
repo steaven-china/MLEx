@@ -83,11 +83,18 @@ export class ContextAssembler {
 
 function formatEvidence(events: MemoryEvent[] | undefined): string {
   if (!events || events.length === 0) return "";
-  return events
-    .slice(-2)
+
+  // Prefer user messages — they carry the original intent.
+  // Fill up to 3 events: user messages first, then other roles.
+  const userEvents = events.filter((e) => e.role === "user");
+  const otherEvents = events.filter((e) => e.role !== "user");
+  const selected = [...userEvents, ...otherEvents].slice(0, 3);
+
+  return selected
     .map((event) => {
       const text = event.text.replace(/\s+/g, " ").trim();
-      const clipped = text.length > 140 ? `${text.slice(0, 140)}...` : text;
+      // 300 chars is ~150 Chinese characters — enough for a full short message.
+      const clipped = text.length > 300 ? `${text.slice(0, 300)}...` : text;
       return `- ${event.role}: ${clipped}`;
     })
     .join("\n");

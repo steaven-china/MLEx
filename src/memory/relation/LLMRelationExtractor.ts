@@ -1,5 +1,5 @@
-import { RelationType } from "../../types.js";
 import type { MemoryBlock } from "../MemoryBlock.js";
+import { RelationType } from "../../types.js";
 import { HeuristicRelationExtractor } from "./RelationExtractor.js";
 import type { ExtractedRelation, IRelationExtractor } from "./RelationExtractor.js";
 
@@ -94,7 +94,7 @@ export class LLMRelationExtractor implements IRelationExtractor {
       const data = (await response.json()) as ChatCompletionResponse;
       const content = data.choices?.[0]?.message?.content ?? "";
       const parsed = parsePayload(content);
-      const cleaned = validateRelations(parsed, current, neighbors);
+      const cleaned = validateRelations(parsed, current);
       if (cleaned.length === 0) {
         this.reportFallback("empty_or_invalid_model_output", current.id, neighbors.length);
         return this.fallback.extract(current, neighbors);
@@ -162,27 +162,36 @@ function extractJsonObject(text: string): string | undefined {
   return text.slice(start, end + 1);
 }
 
-function validateRelations(
-  payload: ExtractorPayload,
-  current: MemoryBlock,
-  neighbors: MemoryBlock[]
-): ExtractedRelation[] {
-  const neighborIds = new Set(neighbors.map((item) => item.id));
-  const relationValues = new Set(Object.values(RelationType));
+function validateRelations(payload: ExtractorPayload, current: MemoryBlock): ExtractedRelation[] {
   const relations = payload.relations ?? [];
   const output: ExtractedRelation[] = [];
 
   for (const relation of relations) {
-    const src = relation.src ?? "";
-    const dst = relation.dst ?? current.id;
-    const type = relation.type ?? "";
-    if (!neighborIds.has(src)) continue;
-    if (dst !== current.id) continue;
-    if (!relationValues.has(type as RelationType)) continue;
+    const src = (relation.src ?? "").trim();
+    const dst = (relation.dst ?? current.id).trim();
+    const type = (relation.type ?? "").trim();
+    if (type.length === 0) continue;
+    if (src.length === 0 && dst.length === 0) continue;
+
+    // File-entity relation types require their respective endpoint prefixes.
+    // Reject any LLM output that uses these types with plain block IDs to
+    // prevent semantic pollution of the relation graph.
+    if (
+      type === RelationType.SNAPSHOT_OF_FILE ||
+      type === RelationType.FILE_MENTIONS_BLOCK
+    ) {
+      const hasFileEndpoint =
+        src.startsWith("file:") ||
+        src.startsWith("snapshot:") ||
+        dst.startsWith("file:") ||
+        dst.startsWith("snapshot:");
+      if (!hasFileEndpoint) continue;
+    }
+
     output.push({
       src,
       dst,
-      type: type as RelationType,
+      type,
       confidence: clampConfidence(relation.confidence)
     });
   }

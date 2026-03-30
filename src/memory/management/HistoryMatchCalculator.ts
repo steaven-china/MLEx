@@ -1,4 +1,4 @@
-import { RelationType } from "../../types.js";
+import { RelationType, type RelationLabel } from "../../types.js";
 import { cosineSimilarity, normalizeText } from "../../utils/text.js";
 import type { MemoryBlock } from "../MemoryBlock.js";
 import type { RelationGraph } from "../RelationGraph.js";
@@ -120,7 +120,7 @@ function relationDirectionalBoost(graph: RelationGraph, candidateId: string, cur
   return Math.max(forward, backward);
 }
 
-function relationTypeWeight(type: RelationType): number {
+function relationTypeWeight(type: RelationLabel): number {
   if (type === RelationType.FOLLOWS) return 0.08;
   if (type === RelationType.CAUSES) return 0.07;
   if (type === RelationType.PARENT_TASK || type === RelationType.CHILD_TASK) return 0.06;

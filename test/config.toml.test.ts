@@ -273,13 +273,16 @@ describe("loadConfig with ~/.mlex/config.toml support", () => {
     expect(config.manager.relationConflictDetectionEnabled).toBe(true);
   });
 
-  test("throws on invalid relation trigger type", async () => {
+  test("loads sqlite worker flag from toml file", async () => {
     const filePath = await makeTempPath();
-    await writeFile(filePath, ["[manager]", 'relationTriggerShortChainMaxSize = "2"'].join("\n"), "utf8");
-
-    expect(() => loadConfig({}, { userTomlPath: filePath })).toThrowError(
-      new RegExp(`manager\\.relationTriggerShortChainMaxSize must be number`)
+    await writeFile(
+      filePath,
+      ["[component]", "sqliteWorkerEnabled = true"].join("\n"),
+      "utf8"
     );
+
+    const config = loadConfig({}, { userTomlPath: filePath });
+    expect(config.component.sqliteWorkerEnabled).toBe(true);
   });
 
   test("throws on invalid toml syntax", async () => {

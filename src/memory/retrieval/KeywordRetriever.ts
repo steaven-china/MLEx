@@ -16,7 +16,11 @@ export class KeywordRetriever implements IBlockRetriever {
       const block = await this.blockStore.get(blockId);
       if (!block) continue;
       const overlap = countOverlap(input.keywords, block.keywords);
-      const score = overlap / Math.max(input.keywords.length, 1);
+      // Jaccard-style denominator: penalises blocks whose keyword set is much
+      // larger than the query's, preventing large unfocused blocks from
+      // dominating recall over short, focused ones.
+      const union = countUnion(input.keywords, block.keywords);
+      const score = union === 0 ? 0 : overlap / union;
       result.push({ blockId, score, source: "keyword", block });
     }
     return result.sort((a, b) => b.score - a.score).slice(0, input.topK);
@@ -26,4 +30,12 @@ export class KeywordRetriever implements IBlockRetriever {
 function countOverlap(left: string[], right: string[]): number {
   const rightSet = new Set(right.map((item) => item.toLowerCase()));
   return left.reduce((sum, item) => sum + Number(rightSet.has(item.toLowerCase())), 0);
+}
+
+function countUnion(left: string[], right: string[]): number {
+  const union = new Set([
+    ...left.map((s) => s.toLowerCase()),
+    ...right.map((s) => s.toLowerCase())
+  ]);
+  return union.size;
 }

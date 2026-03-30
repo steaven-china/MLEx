@@ -1,9 +1,9 @@
-import type { BlockId, RelationType } from "../../types.js";
+import type { BlockId, RelationLabel } from "../../types.js";
 
 export interface StoredRelation {
   src: BlockId;
   dst: BlockId;
-  type: RelationType;
+  type: RelationLabel;
   timestamp: number;
   confidence?: number;
 }

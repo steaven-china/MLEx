@@ -37,10 +37,12 @@ import { SealProcessor } from "./memory/processing/SealProcessor.js";
 import { FileRawEventStore } from "./memory/raw/FileRawEventStore.js";
 import { InMemoryRawEventStore } from "./memory/raw/InMemoryRawEventStore.js";
 import { SQLiteRawEventStore } from "./memory/raw/SQLiteRawEventStore.js";
+import { SQLiteWorkerRawEventStore } from "./memory/raw/SQLiteWorkerRawEventStore.js";
 import type { IRawEventStore } from "./memory/raw/IRawEventStore.js";
 import { FileRelationStore } from "./memory/relation/FileRelationStore.js";
 import { InMemoryRelationStore } from "./memory/relation/InMemoryRelationStore.js";
 import { SQLiteRelationStore } from "./memory/relation/SQLiteRelationStore.js";
+import { SQLiteWorkerRelationStore } from "./memory/relation/SQLiteWorkerRelationStore.js";
 import { KeywordRetriever } from "./memory/retrieval/KeywordRetriever.js";
 import { FusionRetriever } from "./memory/retrieval/FusionRetriever.js";
 import { GraphRetriever } from "./memory/retrieval/GraphRetriever.js";
@@ -51,10 +53,12 @@ import type { IFileAccessRecorder } from "./memory/file/FileAccessRecorder.js";
 import { buildRelationExtractor } from "./memory/relation/relationExtractorFactory.js";
 import type { IRelationStore } from "./memory/relation/IRelationStore.js";
 import { SQLiteDatabase } from "./memory/sqlite/SQLiteDatabase.js";
+import { SQLiteWorkerClient } from "./memory/sqlite-worker/SQLiteWorkerClient.js";
 import { ChromaBlockStore } from "./memory/store/ChromaBlockStore.js";
 import { InMemoryBlockStore } from "./memory/store/InMemoryBlockStore.js";
 import { LanceBlockStore } from "./memory/store/LanceBlockStore.js";
 import { SQLiteBlockStore } from "./memory/store/SQLiteBlockStore.js";
+import { SQLiteWorkerBlockStore } from "./memory/store/SQLiteWorkerBlockStore.js";
 import { HeuristicSummarizer } from "./memory/summarizer/HeuristicSummarizer.js";
 import { BlockStoreVectorStore } from "./memory/vector/BlockStoreVectorStore.js";
 import { InMemoryVectorStore } from "./memory/vector/InMemoryVectorStore.js";
@@ -125,6 +129,7 @@ export function createRuntime(
   const allowedAiTags = normalizeAllowedAiTags(config.component.allowedAiTags);
   const container = new Container();
   let sqliteDatabase: SQLiteDatabase | undefined;
+  let sqliteWorkerClient: SQLiteWorkerClient | undefined;
 
   const getSQLiteDatabase = (): SQLiteDatabase => {
     if (!sqliteDatabase) {
@@ -135,10 +140,21 @@ export function createRuntime(
     return sqliteDatabase;
   };
 
+  const getSQLiteWorkerClient = (): SQLiteWorkerClient => {
+    if (!sqliteWorkerClient) {
+      sqliteWorkerClient = new SQLiteWorkerClient({
+        filePath: config.component.sqliteFilePath,
+        allowedAiTags
+      });
+    }
+    return sqliteWorkerClient;
+  };
+
   registerCoreDependencies({
     config,
     container,
     getSQLiteDatabase,
+    getSQLiteWorkerClient,
     allowedAiTags,
     nowMs: options.nowMs,
     blockIdFactory: options.blockIdFactory
@@ -168,6 +184,10 @@ export function createRuntime(
     await scheduler.stop();
     await proactiveTimerScheduler.stop();
     await memoryManager.flushAsyncRelations();
+    if (sqliteWorkerClient) {
+      await sqliteWorkerClient.close();
+      sqliteWorkerClient = undefined;
+    }
     if (sqliteDatabase) {
       sqliteDatabase.close();
       sqliteDatabase = undefined;
@@ -187,11 +207,20 @@ function registerCoreDependencies(input: {
   config: AppConfig;
   container: Container;
   getSQLiteDatabase: () => SQLiteDatabase;
+  getSQLiteWorkerClient: () => SQLiteWorkerClient;
   allowedAiTags: string[];
   nowMs?: () => number;
   blockIdFactory?: () => string;
 }): void {
-  const { config, container, getSQLiteDatabase, allowedAiTags, nowMs, blockIdFactory } = input;
+  const {
+    config,
+    container,
+    getSQLiteDatabase,
+    getSQLiteWorkerClient,
+    allowedAiTags,
+    nowMs,
+    blockIdFactory
+  } = input;
 
   container.register("config", () => config);
   container.register("locale", () => config.component.locale as Locale);
@@ -207,9 +236,13 @@ function registerCoreDependencies(input: {
   });
   container.register("keywordIndex", () => new InvertedIndex());
   container.register("relationGraph", () => new RelationGraph());
-  container.register("blockStore", () => buildBlockStore(config, getSQLiteDatabase, allowedAiTags));
-  container.register("rawStore", () => buildRawStore(config, getSQLiteDatabase));
-  container.register("relationStore", () => buildRelationStore(config, getSQLiteDatabase));
+  container.register("blockStore", () =>
+    buildBlockStore(config, getSQLiteDatabase, getSQLiteWorkerClient, allowedAiTags)
+  );
+  container.register("rawStore", () => buildRawStore(config, getSQLiteDatabase, getSQLiteWorkerClient));
+  container.register("relationStore", () =>
+    buildRelationStore(config, getSQLiteDatabase, getSQLiteWorkerClient)
+  );
   container.register("vectorStore", () => {
     if (config.component.storageBackend === "memory") {
       return new InMemoryVectorStore();
@@ -364,6 +397,9 @@ function registerCoreDependencies(input: {
       config.component.rawStoreBackend === "sqlite" ||
       config.component.relationStoreBackend === "sqlite";
     if (sqliteEnabled) {
+      if (config.component.sqliteWorkerEnabled) {
+        return new NoopFileAccessRecorder();
+      }
       return new SQLiteFileAccessRecorder(getSQLiteDatabase());
     }
     return new NoopFileAccessRecorder();
@@ -460,6 +496,24 @@ function registerRuntimeDependencies(input: {
       intervalSeconds: Math.max(1, config.manager.proactiveTimerIntervalSeconds)
     });
   });
+
+  // Warn at startup if search/fetch endpoints are missing but the mode requires them.
+  const augmentMode = config.manager.searchAugmentMode;
+  const needsEndpoint = augmentMode === "scheduled" || augmentMode === "predictive";
+  if (needsEndpoint) {
+    if (!config.component.searchEndpoint?.trim()) {
+      console.warn(
+        `[config] searchAugmentMode="${augmentMode}" but searchEndpoint is not configured — ` +
+          "search augmentation will silently return no results."
+      );
+    }
+    if (!config.component.webFetchEndpoint?.trim()) {
+      console.warn(
+        `[config] searchAugmentMode="${augmentMode}" but webFetchEndpoint is not configured — ` +
+          "web page fetching will silently return no content."
+      );
+    }
+  }
 }
 
 function buildChunkStrategy(config: AppConfig): IChunkStrategy {
@@ -477,9 +531,13 @@ function buildChunkStrategy(config: AppConfig): IChunkStrategy {
 function buildBlockStore(
   config: AppConfig,
   getSQLiteDatabase: () => SQLiteDatabase,
+  getSQLiteWorkerClient: () => SQLiteWorkerClient,
   allowedAiTags: string[]
 ) {
   if (config.component.storageBackend === "sqlite") {
+    if (config.component.sqliteWorkerEnabled) {
+      return new SQLiteWorkerBlockStore(getSQLiteWorkerClient());
+    }
     return new SQLiteBlockStore(getSQLiteDatabase(), allowedAiTags);
   }
   if (config.component.storageBackend === "lance") {
@@ -503,9 +561,13 @@ function buildBlockStore(
 
 function buildRawStore(
   config: AppConfig,
-  getSQLiteDatabase: () => SQLiteDatabase
+  getSQLiteDatabase: () => SQLiteDatabase,
+  getSQLiteWorkerClient: () => SQLiteWorkerClient
 ): IRawEventStore {
   if (config.component.rawStoreBackend === "sqlite") {
+    if (config.component.sqliteWorkerEnabled) {
+      return new SQLiteWorkerRawEventStore(getSQLiteWorkerClient());
+    }
     return new SQLiteRawEventStore(getSQLiteDatabase());
   }
   if (config.component.rawStoreBackend === "file") {
@@ -516,9 +578,13 @@ function buildRawStore(
 
 function buildRelationStore(
   config: AppConfig,
-  getSQLiteDatabase: () => SQLiteDatabase
+  getSQLiteDatabase: () => SQLiteDatabase,
+  getSQLiteWorkerClient: () => SQLiteWorkerClient
 ): IRelationStore {
   if (config.component.relationStoreBackend === "sqlite") {
+    if (config.component.sqliteWorkerEnabled) {
+      return new SQLiteWorkerRelationStore(getSQLiteWorkerClient());
+    }
     return new SQLiteRelationStore(getSQLiteDatabase());
   }
   if (config.component.relationStoreBackend === "file") {

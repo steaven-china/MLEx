@@ -13,6 +13,7 @@
     "dev": "tsx src/cli/index.ts chat",
     "web": "tsx src/cli/index.ts web",
     "acceptance": "tsx src/tools/acceptance.ts",
+    "benchmark:sqlite": "tsx src/tools/sqlite-benchmark.ts",
     "verify:arch": "npm run typecheck && npm test && npm run build && npm run acceptance",
     "test": "vitest run",
     "test:watch": "vitest",

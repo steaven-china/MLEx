@@ -48,6 +48,7 @@ export interface ComponentConfig {
   locale: "zh-CN" | "en-US";
   chunkStrategy: "fixed" | "semantic" | "hybrid";
   storageBackend: "memory" | "sqlite" | "lance" | "chroma";
+  sqliteWorkerEnabled: boolean;
   sqliteFilePath: string;
   lanceFilePath: string;
   chromaBaseUrl?: string;
@@ -113,7 +114,11 @@ export const DEFAULT_MANAGER_CONFIG: ManagerConfig = {
   keywordWeight: 0.45,
   vectorWeight: 0.55,
   graphWeight: 0.3,
-  vectorMinScore: 0.2,
+  // Set to 0 by default to work correctly with HashEmbedder (which produces
+  // deterministic but non-semantic vectors).  When using a real semantic
+  // embedding model (e.g. text-embedding-3-small), raise this to 0.15–0.25 to
+  // filter out irrelevant low-similarity blocks from the vector retrieval path.
+  vectorMinScore: 0,
   compressionHighMatchThreshold: 0.82,
   compressionLowMatchThreshold: 0.35,
   compressionSoftBand: 0.08,
@@ -436,6 +441,8 @@ export function loadConfig(
     storageBackend:
       (process.env.MLEX_STORAGE_BACKEND as ComponentConfig["storageBackend"]) ??
       (environment.nodeEnv === "test" ? "memory" : "sqlite"),
+    sqliteWorkerEnabled:
+      (process.env.MLEX_SQLITE_WORKER_ENABLED ?? "false").toLowerCase() === "true",
     sqliteFilePath: process.env.MLEX_SQLITE_FILE ?? ".mlex/memory.db",
     lanceFilePath: process.env.MLEX_LANCE_FILE ?? ".mlex/lance-blocks.json",
     chromaBaseUrl: process.env.MLEX_CHROMA_BASE_URL,
@@ -509,6 +516,9 @@ function validateConfig(config: AppConfig): AppConfig {
     "lance",
     "chroma"
   ]);
+  if (typeof config.component.sqliteWorkerEnabled !== "boolean") {
+    throw new Error("Invalid component.sqliteWorkerEnabled: must be boolean");
+  }
   validateEnum("component.rawStoreBackend", config.component.rawStoreBackend, [
     "memory",
     "file",

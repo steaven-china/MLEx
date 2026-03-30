@@ -25,6 +25,8 @@ export enum RelationType {
   FILE_MENTIONS_BLOCK = "FILE_MENTIONS_BLOCK"
 }
 
+export type RelationLabel = RelationType | (string & {});
+
 export interface BlockRef {
   id: BlockId;
   score: number;

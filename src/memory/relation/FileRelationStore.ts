@@ -51,7 +51,26 @@ export class FileRelationStore implements IRelationStore {
     try {
       const raw = await fs.readFile(this.config.filePath, "utf8");
       const parsed = JSON.parse(raw) as StoredRelation[];
-      this.relations.push(...parsed);
+      // Deduplicate by (src, dst, type), keeping the entry with the highest
+      // confidence — consistent with SQLite and InMemory store behaviour.
+      const seen = new Map<string, StoredRelation>();
+      for (const item of parsed) {
+        if (
+          typeof item.src !== "string" ||
+          typeof item.dst !== "string" ||
+          typeof item.type !== "string" ||
+          item.type.length === 0 ||
+          (item.src.length === 0 && item.dst.length === 0)
+        ) {
+          continue;
+        }
+        const key = `${item.src}|${item.dst}|${item.type}`;
+        const existing = seen.get(key);
+        if (!existing || (item.confidence ?? 0) > (existing.confidence ?? 0)) {
+          seen.set(key, item);
+        }
+      }
+      this.relations.push(...seen.values());
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!message.includes("ENOENT")) {
