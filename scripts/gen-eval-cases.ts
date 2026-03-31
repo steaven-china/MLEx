@@ -300,17 +300,23 @@ function validateCase(c: SemanticCase): string[] {
   if (!Array.isArray(c.blocks) || c.blocks.length < 2) errors.push("blocks must have ≥2 entries");
   if (!c.query) errors.push("missing query");
   if (!c.groundTruth) errors.push("missing groundTruth");
-  // groundTruth must appear in blocks[0]
-  if (c.groundTruth && c.blocks?.[0]) {
-    const b0 = c.blocks[0]!.join(" ");
-    if (!b0.includes(c.groundTruth)) {
-      errors.push(`groundTruth "${c.groundTruth}" not found in blocks[0]`);
+
+  // multi-hop: groundTruth is in blocks[1] (Block B), not blocks[0]
+  // all other categories: groundTruth is in blocks[0]
+  const answerBlockIdx = c.category === "multi-hop" ? 1 : 0;
+  const answerBlock = c.blocks?.[answerBlockIdx];
+  if (c.groundTruth && answerBlock) {
+    const content = answerBlock.join(" ");
+    if (!content.includes(c.groundTruth)) {
+      errors.push(`groundTruth "${c.groundTruth}" not found in blocks[${answerBlockIdx}]`);
     }
   }
-  // groundTruth must NOT appear in other blocks (warning only)
+
+  // groundTruth must NOT appear in other blocks
   if (c.groundTruth && c.blocks?.length > 1) {
-    const leaks = c.blocks.slice(1).filter(b => b.join(" ").includes(c.groundTruth));
-    if (leaks.length > 0) errors.push(`groundTruth leaks into ${leaks.length} non-relevant block(s)`);
+    const otherBlocks = c.blocks.filter((_, i) => i !== answerBlockIdx);
+    const leaks = otherBlocks.filter(b => b.join(" ").includes(c.groundTruth));
+    if (leaks.length > 0) errors.push(`groundTruth leaks into ${leaks.length} non-answer block(s)`);
   }
   return errors;
 }
