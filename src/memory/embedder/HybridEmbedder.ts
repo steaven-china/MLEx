@@ -100,6 +100,13 @@ export class HybridEmbedder implements IEmbedder {
 
   /**
    * 决定使用哪种模式
+   *
+   * 关键规则：
+   * - options 为 undefined 表示这是一次「查询」调用（来自 PartitionMemoryManager.embed(query)）
+   *   查询必须使用 hybrid，确保 hash 和 local 两个子空间都有值，
+   *   才能与任意格式的块向量（hash-only / local-only / hybrid）正确计算相似度。
+   * - options 有值表示这是「块」调用（来自 SealProcessor，携带 tokenCount/tags）
+   *   块按自动策略选择，节省推理时间。
    */
   private decideMode(options?: EmbedOptions): "hash-only" | "local-only" | "hybrid" {
     // 显式指定模式
@@ -108,20 +115,19 @@ export class HybridEmbedder implements IEmbedder {
     // 非 auto 模式直接返回
     if (this.defaultMode !== "auto") return this.defaultMode as any;
 
-    // auto 模式：根据 token 数和标签判断
-    const tokenCount = options?.tokenCount ?? 0;
-    const tags = options?.tags ?? [];
+    // 没有 options → 查询调用 → 必须用 hybrid（保证与所有块格式兼容）
+    if (!options) return "hybrid";
+
+    // auto 块策略：根据 token 数和标签判断
+    const tokenCount = options.tokenCount ?? 0;
+    const tags = options.tags ?? [];
     const hasHybridTag = tags.some(t => this.forceHybridTags.has(t));
 
     // 重要块 → hybrid（双保险）
-    if (hasHybridTag) {
-      return "hybrid";
-    }
+    if (hasHybridTag) return "hybrid";
 
     // 大块 → local-only（信息密度高，值得算准）
-    if (tokenCount > this.tokenThreshold) {
-      return "local-only";
-    }
+    if (tokenCount > this.tokenThreshold) return "local-only";
 
     // 小块 → hash-only（快速过滤）
     return "hash-only";
@@ -199,38 +205,50 @@ export class HybridEmbedder implements IEmbedder {
     if (candidateVecs.length === 0) return [];
 
     const totalBlocks = candidateVecs.length;
-    // 自适应初筛数量：5% 的数据，最少20，最多100
     const prescreenK = Math.min(Math.max(Math.floor(totalBlocks * 0.05), 20), 100);
-    // local 重排数量：最多 topK 的 3 倍
     const rerankK = Math.min(prescreenK, topK * 3);
 
     const { hash: queryHash, local: queryLocal } = this.splitVector(queryVec);
+    const queryHashNonZero = queryHash.some(v => v !== 0);
     const queryLocalNonZero = queryLocal.some(v => v !== 0);
 
-    // 1. hash 初筛
-    const hashScores = candidateVecs.map(({ id, vec }) => {
-      const { hash } = this.splitVector(vec);
-      const score = this.cosineSimilarity(queryHash, hash);
+    // 1. 初筛：用 query 和 block 都非零的那个子空间排序
+    //    - query hybrid + block hash-only  → 用 hash 比较
+    //    - query hybrid + block local-only → 用 local 比较
+    //    - query hybrid + block hybrid     → 用 local 比较（更准）
+    const prescreenScores = candidateVecs.map(({ id, vec }) => {
+      const { hash: candHash, local: candLocal } = this.splitVector(vec);
+      const candLocalNonZero = candLocal.some(v => v !== 0);
+      const candHashNonZero = candHash.some(v => v !== 0);
+
+      let score: number;
+      if (queryLocalNonZero && candLocalNonZero) {
+        score = this.cosineSimilarity(queryLocal, candLocal);
+      } else if (queryHashNonZero && candHashNonZero) {
+        score = this.cosineSimilarity(queryHash, candHash);
+      } else {
+        score = 0;
+      }
       return { id, score, vec };
     });
 
-    hashScores.sort((a, b) => b.score - a.score);
-    const prescreened = hashScores.slice(0, prescreenK);
+    prescreenScores.sort((a, b) => b.score - a.score);
+    const prescreened = prescreenScores.slice(0, prescreenK);
 
-    // 2. local 重排（如果查询有 local 部分，且候选中有 local 向量）
+    // 2. local 重排（如果查询有 local 且有候选也有 local）
     if (queryLocalNonZero) {
-      // 只对 top rerankK 个候选做 local 重排
       const toRerank = prescreened.slice(0, rerankK);
-      const localScores = toRerank
-        .map(({ id, vec }) => {
-          const { local } = this.splitVector(vec);
-          const localNonZero = local.some(v => v !== 0);
-          // 如果候选没有 local 部分，保持 hash 分数
-          const score = localNonZero
-            ? this.cosineSimilarity(queryLocal, local)
-            : this.cosineSimilarity(queryHash, this.splitVector(vec).hash);
-          return { id, score };
-        });
+      const localScores = toRerank.map(({ id, vec }) => {
+        const { hash: candHash, local: candLocal } = this.splitVector(vec);
+        const candLocalNonZero = candLocal.some(v => v !== 0);
+        const candHashNonZero = candHash.some(v => v !== 0);
+        const score = candLocalNonZero
+          ? this.cosineSimilarity(queryLocal, candLocal)
+          : candHashNonZero
+            ? this.cosineSimilarity(queryHash, candHash)
+            : 0;
+        return { id, score };
+      });
 
       localScores.sort((a, b) => b.score - a.score);
       return localScores.slice(0, Math.min(topK, localScores.length));
