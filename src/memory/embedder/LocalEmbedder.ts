@@ -68,13 +68,54 @@ export class LocalEmbedder implements IEmbedder {
   //  Public API                                                          //
   // ------------------------------------------------------------------ //
 
+  // Auto-batcher: accumulates embed() calls that arrive within `batchWindowMs`
+  // and flushes them together as one ONNX forward pass.
+  private batchQueue: Array<{
+    text: string;
+    resolve: (vec: number[]) => void;
+    reject: (err: unknown) => void;
+  }> = [];
+  private batchTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly batchWindowMs = 5; // flush after 5ms of inactivity
+  private readonly maxBatchSize = 32;  // cap to avoid OOM on huge batches
+
   async embed(text: string, _options?: EmbedOptions): Promise<number[]> {
-    const pipe = await this.getPipeline();
-    const result = await (pipe as (t: string, o: object) => Promise<{ data: ArrayLike<number> }>)(
-      text,
-      { pooling: "mean", normalize: true }
-    );
-    return Array.from(result.data);
+    return new Promise<number[]>((resolve, reject) => {
+      this.batchQueue.push({ text, resolve, reject });
+
+      // If batch is full, flush immediately
+      if (this.batchQueue.length >= this.maxBatchSize) {
+        if (this.batchTimer !== null) {
+          clearTimeout(this.batchTimer);
+          this.batchTimer = null;
+        }
+        void this.flushBatch();
+        return;
+      }
+
+      // Otherwise, schedule a flush after the window
+      if (this.batchTimer === null) {
+        this.batchTimer = setTimeout(() => {
+          this.batchTimer = null;
+          void this.flushBatch();
+        }, this.batchWindowMs);
+      }
+    });
+  }
+
+  private async flushBatch(): Promise<void> {
+    if (this.batchQueue.length === 0) return;
+    const batch = this.batchQueue.splice(0, this.maxBatchSize);
+
+    try {
+      const texts = batch.map(item => item.text);
+      const vecs = await this.embedBatch(texts);
+      for (let i = 0; i < batch.length; i++) {
+        batch[i]!.resolve(vecs[i]!);
+      }
+    } catch (err) {
+      for (const item of batch) item.reject(err);
+    }
   }
 
   /**
