@@ -99,6 +99,14 @@ export class HybridEmbedder implements IEmbedder {
   }
 
   /**
+   * 查询时按需批量计算 local 向量（供 HybridVectorStore 重排使用）
+   * 返回纯 local 向量（768维），不含 hash 部分
+   */
+  async embedLocalBatch(texts: string[]): Promise<number[][]> {
+    return this.localEmbedder.embedBatch(texts);
+  }
+
+  /**
    * 决定使用哪种模式
    *
    * 关键规则：
@@ -118,18 +126,15 @@ export class HybridEmbedder implements IEmbedder {
     // 没有 options → 查询调用 → 必须用 hybrid（保证与所有块格式兼容）
     if (!options) return "hybrid";
 
-    // auto 块策略：根据 token 数和标签判断
-    const tokenCount = options.tokenCount ?? 0;
+    // auto 块策略：封块时永远 hash-only（快速写入）
+    // local 推理延迟到查询时按需计算（见 HybridVectorStore.search）
     const tags = options.tags ?? [];
     const hasHybridTag = tags.some(t => this.forceHybridTags.has(t));
 
-    // 重要块 → hybrid（双保险）
+    // 重要块 → hybrid（立即算 local，双保险）
     if (hasHybridTag) return "hybrid";
 
-    // 大块 → local-only（信息密度高，值得算准）
-    if (tokenCount > this.tokenThreshold) return "local-only";
-
-    // 小块 → hash-only（快速过滤）
+    // 普通块 → hash-only（写时极快，查询时按需 local）
     return "hash-only";
   }
 
