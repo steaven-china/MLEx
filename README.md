@@ -1,6 +1,6 @@
-# MLEX Agent
+# MemLess(MLEX) Agent
 
-MLEX is a **runnable CLI/Web AI agent** built around a layered memory architecture:
+MemLess(MLEX) is a **runnable CLI/Web AI agent** built around a layered memory architecture:
 - Automatic conversation block sealing
 - Hybrid retrieval (keyword + vector + relation graph)
 - Optional relation extraction and proactive prediction
