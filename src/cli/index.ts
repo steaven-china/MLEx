@@ -9,15 +9,10 @@ import type { RuntimeOptions } from "../container.js";
 import type { DeepPartial, AppConfig } from "../config.js";
 import { ensureDefaultUserConfigFiles } from "../config/toml.js";
 import type { IDebugTraceRecorder } from "../debug/DebugTraceRecorder.js";
-import {
-  ReadonlyFileService,
-  type ReadFileResult,
-  type ReadonlyFileEntry
-} from "../files/ReadonlyFileService.js";
+import { ReadonlyFileService } from "../files/ReadonlyFileService.js";
 import { createI18n } from "../i18n/index.js";
 import type { Locale } from "../i18n/types.js";
 import { MlexTuiApp } from "../tui/MlexTuiApp.js";
-import { startWebServer } from "../web/server.js";
 import {
   isSupportedEventRole,
   isSupportedIngestFormat,
@@ -25,6 +20,8 @@ import {
   parseIngestContent
 } from "./importer.js";
 import type { EventRole } from "../types.js";
+import { registerWebCommands } from "./commands/webCommands.js";
+import { registerFileCommands } from "./commands/filesCommands.js";
 
 const locale: Locale = process.env.MLEX_LOCALE === "en-US" ? "en-US" : "zh-CN";
 const i18n = createI18n({ locale });
@@ -49,8 +46,15 @@ const optionDescriptions = {
   relationModel: i18n.t("cli.option.relation_model"),
   searchEndpoint: i18n.t("cli.option.search_endpoint"),
   searchApiKey: i18n.t("cli.option.search_api_key"),
+  searchApiFlavor: i18n.t("cli.option.search_api_flavor"),
+  searchApiFreshness: i18n.t("cli.option.search_api_freshness"),
+  searchApiSummary: i18n.t("cli.option.search_api_summary"),
+  searchApiMarket: i18n.t("cli.option.search_api_market"),
   webFetchEndpoint: i18n.t("cli.option.web_fetch_endpoint"),
   webFetchApiKey: i18n.t("cli.option.web_fetch_api_key"),
+  webFetchTimeoutMs: i18n.t("cli.option.webfetch_timeout_ms"),
+  webFetchMaxChars: i18n.t("cli.option.webfetch_max_chars"),
+  webFetchBodyMaxBytes: i18n.t("cli.option.webfetch_body_max_bytes"),
   searchMode: i18n.t("cli.option.search_mode"),
   searchScheduleMinutes: i18n.t("cli.option.search_schedule_minutes"),
   searchTopK: i18n.t("cli.option.search_topk"),
@@ -86,8 +90,23 @@ const optionDescriptions = {
   webDebugApi: i18n.t("cli.option.web_debug_api"),
   webFileApi: i18n.t("cli.option.web_file_api"),
   webRawContext: i18n.t("cli.option.web_raw_context"),
+  bridgeMode: "off | auto | force (OpenClaw/OpenAI-compatible bridge mode)",
+  openaiCompatBypassAgent:
+    "true | false (bypass MLEX native agent for /v1/chat/completions)",
   webAdminToken: i18n.t("cli.option.web_admin_token"),
   webBodyMaxBytes: i18n.t("cli.option.web_body_max_bytes"),
+  toolFileWriteEnabled: "true | false (enable workspace.write tool)",
+  toolFileWriteMaxBytes: "max bytes per workspace.write operation",
+  toolTerminalEnabled: "true | false (enable terminal.run tool)",
+  toolTerminalTimeoutMs: "terminal.run default timeout in milliseconds",
+  toolTerminalMaxOutputChars: "terminal.run max output characters",
+  mcpEnabled: "true | false (enable mcp tools)",
+  mcpCommand: "MCP stdio command",
+  mcpArgs: "MCP stdio args, comma separated",
+  mcpWorkdir: "MCP working directory override",
+  mcpInitTimeoutMs: "MCP initialize timeout in milliseconds",
+  mcpToolTimeoutMs: "MCP tool call timeout in milliseconds",
+  mcpToolAllowlist: "allowed MCP tool names, comma separated",
   debugTrace: i18n.t("cli.option.debug_trace"),
   debugTraceMax: i18n.t("cli.option.debug_trace_max"),
   hybridPrescreenRatio: i18n.t("cli.option.hybrid_prescreen_ratio"),
@@ -136,166 +155,23 @@ program
   .version(packageJson.version)
   .addHelpText("after", i18n.t("cli.help.precedence"));
 
-program
-  .command("web")
-  .description(i18n.t("cli.web.description"))
-  .option("--host <host>", optionDescriptions.host, "127.0.0.1")
-  .option("--port <number>", optionDescriptions.port, "8787")
-  .option("--provider <provider>", optionDescriptions.provider)
-  .option("--model <model>", optionDescriptions.model)
-  .option("--chunk-strategy <strategy>", optionDescriptions.chunkStrategy)
-  .option("--storage-backend <backend>", optionDescriptions.storageBackend)
-  .option("--sqlite-file <path>", optionDescriptions.sqliteFile)
-  .option("--lance-file <path>", optionDescriptions.lanceFile)
-  .option("--lance-db-path <path>", optionDescriptions.lanceDbPath)
-  .option("--raw-store-backend <backend>", optionDescriptions.rawStoreBackend)
-  .option("--raw-store-file <path>", optionDescriptions.rawStoreFile)
-  .option("--relation-store-backend <backend>", optionDescriptions.relationStoreBackend)
-  .option("--relation-store-file <path>", optionDescriptions.relationStoreFile)
-  .option("--graph-embedding <method>", optionDescriptions.graphEmbedding)
-  .option("--relation-extractor <kind>", optionDescriptions.relationExtractor)
-  .option("--relation-model <model>", optionDescriptions.relationModel)
-  .option("--search-endpoint <url>", optionDescriptions.searchEndpoint)
-  .option("--search-api-key <key>", optionDescriptions.searchApiKey)
-  .option("--web-fetch-endpoint <url>", optionDescriptions.webFetchEndpoint)
-  .option("--web-fetch-api-key <key>", optionDescriptions.webFetchApiKey)
-  .option("--search-mode <mode>", optionDescriptions.searchMode)
-  .option("--search-schedule-minutes <number>", optionDescriptions.searchScheduleMinutes)
-  .option("--search-topk <number>", optionDescriptions.searchTopK)
-  .option("--search-seeds <csv>", optionDescriptions.searchSeeds)
-  .option("--prediction <enabled>", optionDescriptions.prediction)
-  .option("--proactive-wakeup <enabled>", optionDescriptions.proactiveWakeup)
-  .option("--proactive-min-interval-seconds <number>", optionDescriptions.proactiveMinIntervalSeconds)
-  .option("--proactive-max-per-hour <number>", optionDescriptions.proactiveMaxPerHour)
-  .option("--proactive-require-evidence <enabled>", optionDescriptions.proactiveRequireEvidence)
-  .option("--proactive-timer <enabled>", optionDescriptions.proactiveTimer)
-  .option("--proactive-timer-interval-seconds <number>", optionDescriptions.proactiveTimerIntervalSeconds)
-  .option("--topic-shift-trigger <enabled>", optionDescriptions.topicShiftTrigger)
-  .option("--topic-shift-min-keywords <number>", optionDescriptions.topicShiftMinKeywords)
-  .option("--topic-shift-min-tokens <number>", optionDescriptions.topicShiftMinTokens)
-  .option(
-    "--topic-shift-query-similarity-soft-max <number>",
-    optionDescriptions.topicShiftQuerySimilaritySoftMax
-  )
-  .option(
-    "--topic-shift-query-similarity-hard-max <number>",
-    optionDescriptions.topicShiftQuerySimilarityHardMax
-  )
-  .option(
-    "--topic-shift-keyword-overlap-soft-max <number>",
-    optionDescriptions.topicShiftKeywordOverlapSoftMax
-  )
-  .option(
-    "--topic-shift-keyword-overlap-hard-max <number>",
-    optionDescriptions.topicShiftKeywordOverlapHardMax
-  )
-  .option(
-    "--topic-shift-retrieval-overlap-soft-max <number>",
-    optionDescriptions.topicShiftRetrievalOverlapSoftMax
-  )
-  .option(
-    "--topic-shift-retrieval-overlap-hard-max <number>",
-    optionDescriptions.topicShiftRetrievalOverlapHardMax
-  )
-  .option(
-    "--topic-shift-soft-cooldown-seconds <number>",
-    optionDescriptions.topicShiftSoftCooldownSeconds
-  )
-  .option(
-    "--topic-shift-hard-cooldown-seconds <number>",
-    optionDescriptions.topicShiftHardCooldownSeconds
-  )
-  .option("--chunk-manifest-enabled <enabled>", optionDescriptions.chunkManifestEnabled)
-  .option("--chunk-affects-retrieval <enabled>", optionDescriptions.chunkAffectsRetrieval)
-  .option("--chunk-manifest-target-tokens <number>", optionDescriptions.chunkManifestTargetTokens)
-  .option("--chunk-manifest-max-tokens <number>", optionDescriptions.chunkManifestMaxTokens)
-  .option("--chunk-manifest-max-blocks <number>", optionDescriptions.chunkManifestMaxBlocks)
-  .option("--chunk-manifest-max-gap-ms <number>", optionDescriptions.chunkManifestMaxGapMs)
-  .option("--chunk-neighbor-expand-enabled <enabled>", optionDescriptions.chunkNeighborExpandEnabled)
-  .option("--chunk-neighbor-window <number>", optionDescriptions.chunkNeighborWindow)
-  .option("--chunk-neighbor-score-gate <number>", optionDescriptions.chunkNeighborScoreGate)
-  .option("--chunk-max-expanded-blocks <number>", optionDescriptions.chunkMaxExpandedBlocks)
-  .option("--web-debug-api <enabled>", optionDescriptions.webDebugApi)
-  .option("--web-file-api <enabled>", optionDescriptions.webFileApi)
-  .option("--web-raw-context <enabled>", optionDescriptions.webRawContext)
-  .option("--web-admin-token <token>", optionDescriptions.webAdminToken)
-  .option("--web-body-max-bytes <number>", optionDescriptions.webBodyMaxBytes)
-  .option("--debug-trace <enabled>", optionDescriptions.debugTrace)
-  .option("--debug-trace-max <number>", optionDescriptions.debugTraceMax)
-  .option("--hybrid-prescreen-ratio <number>", optionDescriptions.hybridPrescreenRatio)
-  .option("--hybrid-prescreen-min <number>", optionDescriptions.hybridPrescreenMin)
-  .option("--hybrid-prescreen-max <number>", optionDescriptions.hybridPrescreenMax)
-  .option("--hybrid-rerank-multiplier <number>", optionDescriptions.hybridRerankMultiplier)
-  .option("--hybrid-rerank-hard-cap <number>", optionDescriptions.hybridRerankHardCap)
-  .option(
-    "--hybrid-hash-early-stop-min-gap <number>",
-    optionDescriptions.hybridHashEarlyStopMinGap
-  )
-  .option(
-    "--hybrid-local-rerank-timeout-ms <number>",
-    optionDescriptions.hybridLocalRerankTimeoutMs
-  )
-  .option(
-    "--hybrid-rerank-text-max-chars <number>",
-    optionDescriptions.hybridRerankTextMaxChars
-  )
-  .option("--hybrid-local-cache-max <number>", optionDescriptions.hybridLocalCacheMax)
-  .option("--hybrid-local-cache-ttl-ms <number>", optionDescriptions.hybridLocalCacheTtlMs)
-  .option("--local-embed-batch-window-ms <number>", optionDescriptions.localEmbedBatchWindowMs)
-  .option("--local-embed-max-batch-size <number>", optionDescriptions.localEmbedMaxBatchSize)
-  .option("--local-embed-queue-max-pending <number>", optionDescriptions.localEmbedQueueMaxPending)
-  .option("--local-embed-execution-provider <provider>", optionDescriptions.localEmbedExecutionProvider)
-  .option("--include-tags-intro <enabled>", optionDescriptions.includeTagsIntro)
-  .option("--tags-intro <path>", optionDescriptions.tagsIntro)
-  .option("--tags-toml <path>", optionDescriptions.tagsToml)
-  .option("--tags-vars <csv>", optionDescriptions.tagsVars)
-  .action(async (options) => {
-    const host = asOptionalString(options.host) ?? "127.0.0.1";
-    const preferredPort = parseOptionalNumber(asOptionalString(options.port)) ?? 8787;
-    const started = await startWebServerWithFallback(
-      host,
-      preferredPort,
-      buildRuntimeOverrides(options),
-      buildRuntimeOptions(options)
-    );
-    output.write(`${i18n.t("cli.web.running", { url: started.url })}\n`);
-    output.write(`${i18n.t("cli.web.stop_hint")}\n`);
+registerWebCommands(program, {
+  i18n,
+  output,
+  optionDescriptions,
+  asOptionalString,
+  parseOptionalNumber,
+  buildRuntimeOptions,
+  buildRuntimeOverrides
+});
 
-    const shutdown = async (): Promise<void> => {
-      await started.close();
-      process.exit(0);
-    };
-    process.once("SIGINT", () => {
-      void shutdown();
-    });
-    process.once("SIGTERM", () => {
-      void shutdown();
-    });
-  });
-
-program
-  .command("files:list")
-  .description(i18n.t("cli.files.list.description"))
-  .argument("[path]", i18n.t("cli.files.list.arg_path"), ".")
-  .option("--max-entries <number>", optionDescriptions.maxEntries, "200")
-  .action(async (pathInput: string, options) => {
-    const fileService = new ReadonlyFileService({ rootPath: process.cwd() });
-    const maxEntries = parseOptionalNumber(asOptionalString(options.maxEntries));
-    const entries = await fileService.list(pathInput, maxEntries);
-    output.write(formatFileList(entries, pathInput));
-  });
-
-program
-  .command("files:read")
-  .description(i18n.t("cli.files.read.description"))
-  .argument("<path>", i18n.t("cli.files.read.arg_path"))
-  .option("--max-bytes <number>", optionDescriptions.maxBytes)
-  .action(async (pathInput: string, options) => {
-    const fileService = new ReadonlyFileService({ rootPath: process.cwd() });
-    const maxBytes = parseOptionalNumber(asOptionalString(options.maxBytes));
-    const result = await fileService.read(pathInput, maxBytes);
-    output.write(formatFileRead(result));
-  });
+registerFileCommands(program, {
+  i18n,
+  output,
+  optionDescriptions,
+  asOptionalString,
+  parseOptionalNumber
+});
 
 
 program
@@ -540,6 +416,10 @@ function applyAgentRuntimeOptions(command: Command): void {
     .option("--relation-model <model>", optionDescriptions.relationModel)
     .option("--search-endpoint <url>", optionDescriptions.searchEndpoint)
     .option("--search-api-key <key>", optionDescriptions.searchApiKey)
+    .option("--search-api-flavor <flavor>", optionDescriptions.searchApiFlavor)
+    .option("--search-api-freshness <value>", optionDescriptions.searchApiFreshness)
+    .option("--search-api-summary <enabled>", optionDescriptions.searchApiSummary)
+    .option("--search-api-market <market>", optionDescriptions.searchApiMarket)
     .option("--web-fetch-endpoint <url>", optionDescriptions.webFetchEndpoint)
     .option("--web-fetch-api-key <key>", optionDescriptions.webFetchApiKey)
     .option("--search-mode <mode>", optionDescriptions.searchMode)
@@ -664,6 +544,10 @@ function buildRuntimeOverrides(options: Record<string, unknown>): DeepPartial<Ap
       chromaCollectionId: asOptionalString(options.chromaCollection),
       searchEndpoint: asOptionalString(options.searchEndpoint),
       searchApiKey: asOptionalString(options.searchApiKey),
+      searchApiFlavor: asOptionalString(options.searchApiFlavor) as AppConfig["component"]["searchApiFlavor"],
+      searchApiFreshness: asOptionalString(options.searchApiFreshness),
+      searchApiSummaryEnabled: parseOptionalBoolean(asOptionalString(options.searchApiSummary)),
+      searchApiMarket: asOptionalString(options.searchApiMarket),
       webFetchEndpoint: asOptionalString(options.webFetchEndpoint),
       webFetchApiKey: asOptionalString(options.webFetchApiKey),
       searchSeedQueries: parseOptionalCsv(asOptionalString(options.searchSeeds)),
@@ -681,8 +565,26 @@ function buildRuntimeOverrides(options: Record<string, unknown>): DeepPartial<Ap
       webDebugApiEnabled: parseOptionalBoolean(asOptionalString(options.webDebugApi)),
       webFileApiEnabled: parseOptionalBoolean(asOptionalString(options.webFileApi)),
       webExposeRawContext: parseOptionalBoolean(asOptionalString(options.webRawContext)),
+      bridgeMode: asOptionalString(options.bridgeMode) as AppConfig["component"]["bridgeMode"],
+      openaiCompatBypassAgent: parseOptionalBoolean(
+        asOptionalString(options.openaiCompatBypassAgent)
+      ),
       webAdminToken: asOptionalString(options.webAdminToken),
       webRequestBodyMaxBytes: parseOptionalNumber(asOptionalString(options.webBodyMaxBytes)),
+      toolFileWriteEnabled: parseOptionalBoolean(asOptionalString(options.toolFileWriteEnabled)),
+      toolFileWriteMaxBytes: parseOptionalNumber(asOptionalString(options.toolFileWriteMaxBytes)),
+      toolTerminalEnabled: parseOptionalBoolean(asOptionalString(options.toolTerminalEnabled)),
+      toolTerminalTimeoutMs: parseOptionalNumber(asOptionalString(options.toolTerminalTimeoutMs)),
+      toolTerminalMaxOutputChars: parseOptionalNumber(
+        asOptionalString(options.toolTerminalMaxOutputChars)
+      ),
+      mcpEnabled: parseOptionalBoolean(asOptionalString(options.mcpEnabled)),
+      mcpCommand: asOptionalString(options.mcpCommand),
+      mcpArgs: parseOptionalCsv(asOptionalString(options.mcpArgs)),
+      mcpWorkdir: asOptionalString(options.mcpWorkdir),
+      mcpInitTimeoutMs: parseOptionalNumber(asOptionalString(options.mcpInitTimeoutMs)),
+      mcpToolTimeoutMs: parseOptionalNumber(asOptionalString(options.mcpToolTimeoutMs)),
+      mcpToolsAllowlist: parseOptionalCsv(asOptionalString(options.mcpToolAllowlist)),
       debugTraceEnabled: parseOptionalBoolean(asOptionalString(options.debugTrace)),
       debugTraceMaxEntries: parseOptionalNumber(asOptionalString(options.debugTraceMax)),
       localEmbedBatchWindowMs: parseOptionalNumber(asOptionalString(options.localEmbedBatchWindowMs)),
@@ -823,35 +725,6 @@ function parseOptionalKvCsv(value: string | undefined): Record<string, string> |
   return Object.keys(output).length > 0 ? output : undefined;
 }
 
-function formatFileList(entries: ReadonlyFileEntry[], pathInput: string): string {
-  const header = `${i18n.t("cli.files.list.header", { path: pathInput })}\n`;
-  if (entries.length === 0) {
-    return `${header}${i18n.t("cli.files.list.empty")}\n`;
-  }
-  const lines = entries.map((entry) => {
-    const prefix =
-      entry.type === "dir"
-        ? i18n.t("cli.files.list.type.dir")
-        : entry.type === "file"
-          ? i18n.t("cli.files.list.type.file")
-          : i18n.t("cli.files.list.type.other");
-    const sizePart = typeof entry.sizeBytes === "number" ? i18n.t("cli.files.list.size", { size: entry.sizeBytes }) : "";
-    return `${prefix} ${entry.path}${sizePart}`;
-  });
-  return `${header}${lines.join("\n")}\n`;
-}
-
-function formatFileRead(result: ReadFileResult): string {
-  const meta =
-    `${i18n.t("cli.files.read.meta", {
-      path: result.path,
-      bytes: result.bytes,
-      totalBytes: result.totalBytes,
-      truncated: result.truncated ? i18n.t("cli.files.read.truncated") : ""
-    })}\n`;
-  return `${meta}${result.text}\n`;
-}
-
 function sanitizeConfigForDisplay(config: AppConfig): AppConfig {
   return {
     ...config,
@@ -941,37 +814,4 @@ async function runSwarmWorkers(
       }
     })
   );
-}
-
-async function startWebServerWithFallback(
-  host: string,
-  preferredPort: number,
-  runtimeOverrides: DeepPartial<AppConfig>,
-  runtimeOptions: RuntimeOptions
-): Promise<Awaited<ReturnType<typeof startWebServer>>> {
-  try {
-    return await startWebServer({
-      host,
-      port: preferredPort,
-      runtimeOverrides,
-      runtimeOptions
-    });
-  } catch (error) {
-    if (!isAddressInUse(error)) {
-      throw error;
-    }
-    output.write(`${i18n.t("cli.web.port_fallback", { port: preferredPort })}\n`);
-    return startWebServer({
-      host,
-      port: 0,
-      runtimeOverrides,
-      runtimeOptions
-    });
-  }
-}
-
-function isAddressInUse(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const candidate = error as { code?: string };
-  return candidate.code === "EADDRINUSE";
 }

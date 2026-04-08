@@ -692,13 +692,41 @@ If OpenClaw should own all agent logic (no MLEX native agent layer), enable prov
 - env: `MLEX_OPENAI_COMPAT_BYPASS_AGENT=true`
 - `mlex web` flag: `--openai-compat-bypass-agent true`
 
+Bridge behavior can be explicitly controlled:
+- env: `MLEX_BRIDGE_MODE=off|auto|force`
+- `mlex web` flag: `--bridge-mode off|auto|force`
+- modes:
+  - `off`: disable automatic OpenClaw bridge detection (`openaiCompatBypassAgent=true` still forces bypass)
+  - `auto` (default): detect bridge signals and bypass automatically
+  - `force`: always require passthrough; if passthrough target is unavailable, return explicit bridge error (no native fallback)
+
 Automatic bridge bypass is also enabled when OpenClaw bridge signals are detected in request payload/headers
-(`openclaw.*`, `sidecar/sidebag`, `x-openclaw-bridge`, `x-mlex-bridge-mode`, or `User-Agent` containing `openclaw`).
+(`openclaw.*`, `sidecar/sidebag`, `bridgeHint`/`bridge_hint`, `x-openclaw-bridge`, `x-mlex-bridge-hint`,
+`x-mlex-bridge-mode`, or `User-Agent` containing `openclaw`).
+
+Recommended hint contract (new + backward compatible):
+- header: `x-mlex-bridge-hint: bridge`
+- body: `bridgeHint: "bridge"` (or `bridge_hint`)
+- legacy hints remain supported for compatibility
 
 In bridge bypass mode, MLEX uses raw passthrough for OpenAI-compatible upstreams:
 - preserves OpenAI/OpenClaw fields such as `tools`, `tool_choice`, `tool_calls`, and tool-loop payloads
 - does not write tool events into MLEX memory blocks
 - projects file-query tool calls (for example `readonly.read`) into relation edges (`SNAPSHOT_OF_FILE`, `FILE_MENTIONS_BLOCK` when an active block exists) inside the request session's private relation store
+
+Bridge error codes (`type=bridge_error`):
+- `bridge_passthrough_unavailable`: `bridgeMode=force` but passthrough target is not configured
+- `bridge_passthrough_failed`: passthrough target exists but upstream call failed
+
+Bridge debug trace events (`category=web.bridge`):
+- `detected`
+- `forward.start`
+- `forward.ok`
+- `forward.fail`
+- `forward.unavailable`
+- `forward.exception`
+- `relation.projected`
+- `relation.project.fail`
 
 Session routing for compatibility mode:
 - preferred: `session_id` (or `sessionId`)

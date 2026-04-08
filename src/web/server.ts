@@ -1,8 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { join, parse, isAbsolute, resolve } from "node:path";
-import { Readable } from "node:stream";
+import { join, parse } from "node:path";
 
 import type { AppConfig, DeepPartial } from "../config.js";
 import type { RuntimeOptions, RuntimeProactiveWakeupEvent } from "../container.js";
@@ -16,6 +15,20 @@ import type { IRelationStore } from "../memory/relation/IRelationStore.js";
 import type { IBlockStore } from "../memory/store/IBlockStore.js";
 import type { ChatMessage, ILLMProvider, LlmUsage } from "../agent/LLMProvider.js";
 import { renderAppHtml } from "./renderAppHtml.js";
+import {
+  type OpenAIChatMessage,
+  type OpenAIChatMessagePart,
+  type BridgeMode,
+  type BridgeExecutionResult,
+  type OpenClawSideBag,
+  type OpenAIChatRequestBody,
+  normalizeOpenAIChatRequest as normalizeOpenAIChatRequestBridge,
+  isOpenClawBridgeRequest as isOpenClawBridgeRequestBridge,
+  executeBridgePassthrough as executeBridgePassthroughBridge
+} from "./bridge/openaiCompatBridge.js";
+import { handleDebugRoute } from "./routes/debug.js";
+import { handleFileRoute } from "./routes/files.js";
+import { handleOpenAiCompatRoute } from "./routes/openaiCompat.js";
 import { createId } from "../utils/id.js";
 
 export interface WebServerOptions {
@@ -36,69 +49,6 @@ interface ChatRequestBody {
   message?: string;
   sessionId?: string;
   requestId?: string;
-}
-
-interface OpenAIChatMessagePart {
-  type?: string;
-  text?: string;
-  content?: string;
-  value?: string;
-}
-
-interface OpenAIChatMessage {
-  role?: string;
-  content?: string | OpenAIChatMessagePart[] | null;
-}
-
-interface OpenClawSideBag {
-  model?: string;
-  messages?: OpenAIChatMessage[];
-  prompt?: string;
-  input?: unknown;
-  query?: string;
-  message?: string;
-  stream?: boolean;
-  includeUsage?: boolean;
-  include_usage?: boolean;
-  sessionId?: string;
-  session_id?: string;
-  requestId?: string;
-  request_id?: string;
-}
-
-interface OpenClawSideBagContainer {
-  sidecar?: OpenClawSideBag;
-  sidebag?: OpenClawSideBag;
-}
-
-interface OpenAIChatRequestBody {
-  model?: string;
-  messages?: OpenAIChatMessage[];
-  prompt?: string;
-  input?: unknown;
-  query?: string;
-  stream?: boolean;
-  stream_options?: {
-    include_usage?: boolean;
-    includeUsage?: boolean;
-  };
-  user?: string;
-  sessionId?: string;
-  session_id?: string;
-  requestId?: string;
-  request_id?: string;
-  sidecar?: OpenClawSideBag;
-  sidebag?: OpenClawSideBag;
-  openclaw?: OpenClawSideBagContainer;
-  metadata?: {
-    sessionId?: string;
-    session_id?: string;
-    requestId?: string;
-    request_id?: string;
-    sidecar?: OpenClawSideBag;
-    sidebag?: OpenClawSideBag;
-    openclaw?: OpenClawSideBagContainer;
-  };
 }
 
 interface LastContextState {
@@ -355,358 +305,40 @@ async function routeRequest(
     return;
   }
 
-  if (method === "GET" && pathname === "/v1/models") {
-    const modelId = resolveCurrentModelId(defaultRuntime.privateRuntime.config);
-    sendJson(res, 200, {
-      object: "list",
-      data: [
-        {
-          id: modelId,
-          object: "model",
-          created: 0,
-          owned_by: "mlex"
-        }
-      ]
-    });
-    return;
-  }
-
-  if (method === "POST" && pathname === "/v1/chat/completions") {
-    const body = await readJson<OpenAIChatRequestBody>(req, i18n, bodyLimit);
-    const request = normalizeOpenAIChatRequest(body);
-    const requestId = normalizeRequestId(request.requestId);
-    const signal = createRequestAbortSignal(req, res);
-    const completionId = createId("chatcmpl");
-    const created = Math.floor(Date.now() / 1000);
-    const bypassNativeAgent =
-      defaultRuntime.privateRuntime.config.component.openaiCompatBypassAgent ||
-      isOpenClawBridgeRequest(req, body);
-
-    if (bypassNativeAgent) {
-      const compatRuntime = resolveRuntimeForSession(request.sessionId).privateRuntime;
-      const passthroughHandled = await tryHandleOpenAiCompatPassthrough({
-        req,
-        res,
-        body,
-        request,
-        requestId,
-        signal,
-        runtime: compatRuntime
-      });
-      if (passthroughHandled) return;
-
-      const provider = compatRuntime.container.resolve<ILLMProvider>("provider");
-      const providerMessages = normalizeOpenAIProviderMessages(body, request.message);
-      if (providerMessages.length === 0) {
-        sendJson(res, 400, {
-          error: {
-            message: i18n.t("web.api.error.message_required"),
-            type: "invalid_request_error"
-          }
-        });
-        return;
+  if (
+    await handleOpenAiCompatRoute({
+      req,
+      res,
+      method,
+      pathname,
+      bodyLimit,
+      i18n,
+      defaultRuntime,
+      resolveRuntimeForSession,
+      helpers: {
+        sendJson,
+        readJson,
+        normalizeOpenAIChatRequest,
+        normalizeRequestId,
+        createRequestAbortSignal,
+        isOpenClawBridgeRequest,
+        executeBridgePassthrough,
+        resolveCurrentModelId,
+        normalizeOpenAIProviderMessages,
+        joinUsageParts,
+        resolveSystemFingerprint,
+        applyOpenAiCompatHeaders,
+        sendOpenAiSseData,
+        readProviderUsage,
+        resolveOpenAiUsage,
+        prepareSharedContextForRequest,
+        buildSharedExternalSystemContext,
+        appendSharedAssistantMirror,
+        combineReplyAndProactive,
+        normalizeUserMessage
       }
-      const promptUsageSource = joinUsageParts(providerMessages.map((entry) => entry.content));
-      const model = request.model ?? resolveCurrentModelId(compatRuntime.config);
-      const systemFingerprint = resolveSystemFingerprint(compatRuntime.config);
-
-      if (request.stream) {
-        res.statusCode = 200;
-        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-        res.setHeader("Cache-Control", "no-cache");
-        res.setHeader("Connection", "keep-alive");
-        res.setHeader("X-Accel-Buffering", "no");
-        applyOpenAiCompatHeaders(res, request.sessionId, requestId, promptUsageSource);
-        sendOpenAiSseData(res, {
-          id: completionId,
-          object: "chat.completion.chunk",
-          created,
-          model,
-          system_fingerprint: systemFingerprint,
-          choices: [
-            {
-              index: 0,
-              delta: { role: "assistant" },
-              finish_reason: null
-            }
-          ]
-        });
-
-        try {
-          let content = "";
-          if (provider.generateStream) {
-            content = await provider.generateStream(
-              providerMessages,
-              (token) => {
-                if (signal.aborted || res.writableEnded) return;
-                if (typeof token !== "string" || token.length === 0) return;
-                sendOpenAiSseData(res, {
-                  id: completionId,
-                  object: "chat.completion.chunk",
-                  created,
-                  model,
-                  system_fingerprint: systemFingerprint,
-                  choices: [
-                    {
-                      index: 0,
-                      delta: { content: token },
-                      finish_reason: null
-                    }
-                  ]
-                });
-              },
-              { signal }
-            );
-          } else {
-            content = await provider.generate(providerMessages, { signal });
-            if (!signal.aborted && !res.writableEnded && content.length > 0) {
-              sendOpenAiSseData(res, {
-                id: completionId,
-                object: "chat.completion.chunk",
-                created,
-                model,
-                system_fingerprint: systemFingerprint,
-                choices: [
-                  {
-                    index: 0,
-                    delta: { content },
-                    finish_reason: null
-                  }
-                ]
-              });
-            }
-          }
-
-          const usage = resolveOpenAiUsage(readProviderUsage(provider), promptUsageSource, content);
-          if (!signal.aborted && !res.writableEnded) {
-            sendOpenAiSseData(res, {
-              id: completionId,
-              object: "chat.completion.chunk",
-              created,
-              model,
-              system_fingerprint: systemFingerprint,
-              choices: [
-                {
-                  index: 0,
-                  delta: {},
-                  finish_reason: "stop"
-                }
-              ]
-            });
-            if (request.includeUsage) {
-              sendOpenAiSseData(res, {
-                id: completionId,
-                object: "chat.completion.chunk",
-                created,
-                model,
-                system_fingerprint: systemFingerprint,
-                choices: [],
-                usage
-              });
-            }
-            sendOpenAiSseData(res, "[DONE]");
-            res.end();
-          }
-        } catch (error) {
-          if (!res.writableEnded) {
-            sendOpenAiSseData(res, {
-              error: {
-                message: error instanceof Error ? error.message : i18n.t("web.error.stream_unknown"),
-                type: "server_error"
-              }
-            });
-            sendOpenAiSseData(res, "[DONE]");
-            res.end();
-          }
-        }
-        return;
-      }
-
-      const content = await provider.generate(providerMessages, { signal });
-      const usage = resolveOpenAiUsage(readProviderUsage(provider), promptUsageSource, content);
-      applyOpenAiCompatHeaders(res, request.sessionId, requestId, promptUsageSource);
-      sendJson(res, 200, {
-        id: completionId,
-        object: "chat.completion",
-        created,
-        model,
-        system_fingerprint: systemFingerprint,
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content
-            },
-            finish_reason: "stop"
-          }
-        ],
-        usage
-      });
-      return;
-    }
-
-    if (!request.message) {
-      sendJson(res, 400, {
-        error: {
-          message: i18n.t("web.api.error.message_required"),
-          type: "invalid_request_error"
-        }
-      });
-      return;
-    }
-
-    const runtimeSet = resolveRuntimeForSession(request.sessionId);
-    const model = request.model ?? resolveCurrentModelId(runtimeSet.privateRuntime.config);
-    const systemFingerprint = resolveSystemFingerprint(runtimeSet.privateRuntime.config);
-    const sharedContext = await prepareSharedContextForRequest(runtimeSet, request.message);
-    const externalSystemContext = buildSharedExternalSystemContext(sharedContext);
-    const promptUsageSource = joinUsageParts([request.message, externalSystemContext]);
-
-    if (request.stream) {
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-      res.setHeader("Cache-Control", "no-cache");
-      res.setHeader("Connection", "keep-alive");
-      res.setHeader("X-Accel-Buffering", "no");
-      applyOpenAiCompatHeaders(res, request.sessionId, requestId, promptUsageSource);
-      sendOpenAiSseData(res, {
-        id: completionId,
-        object: "chat.completion.chunk",
-        created,
-        model,
-        system_fingerprint: systemFingerprint,
-        choices: [
-          {
-            index: 0,
-            delta: { role: "assistant" },
-            finish_reason: null
-          }
-        ]
-      });
-      try {
-        const result = await runtimeSet.privateRuntime.agent.respondStream(
-          request.message,
-          (token) => {
-            if (signal.aborted || res.writableEnded) return;
-            const content = normalizeUserMessage(token);
-            if (!content) return;
-            sendOpenAiSseData(res, {
-              id: completionId,
-              object: "chat.completion.chunk",
-              created,
-              model,
-              system_fingerprint: systemFingerprint,
-              choices: [
-                {
-                  index: 0,
-                  delta: { content },
-                  finish_reason: null
-                }
-              ]
-            });
-          },
-          {
-            signal,
-            externalSystemContext
-          }
-        );
-        await appendSharedAssistantMirror(
-          runtimeSet,
-          combineReplyAndProactive(result.text, result.proactiveText)
-        );
-        const completionContent = combineReplyAndProactive(result.text, result.proactiveText);
-        const usage = resolveOpenAiUsage(result.llmUsage, promptUsageSource, completionContent);
-        const proactiveText = normalizeUserMessage(result.proactiveText);
-        if (!signal.aborted && !res.writableEnded && proactiveText) {
-          sendOpenAiSseData(res, {
-            id: completionId,
-            object: "chat.completion.chunk",
-            created,
-            model,
-            system_fingerprint: systemFingerprint,
-            choices: [
-              {
-                index: 0,
-                delta: { content: `\n\n${proactiveText}` },
-                finish_reason: null
-              }
-            ]
-          });
-        }
-        if (!signal.aborted && !res.writableEnded) {
-          sendOpenAiSseData(res, {
-            id: completionId,
-            object: "chat.completion.chunk",
-            created,
-            model,
-            system_fingerprint: systemFingerprint,
-            choices: [
-              {
-                index: 0,
-                delta: {},
-                finish_reason: "stop"
-              }
-            ]
-          });
-          if (request.includeUsage) {
-            sendOpenAiSseData(res, {
-              id: completionId,
-              object: "chat.completion.chunk",
-              created,
-              model,
-              system_fingerprint: systemFingerprint,
-              choices: [],
-              usage
-            });
-          }
-          sendOpenAiSseData(res, "[DONE]");
-          res.end();
-        }
-      } catch (error) {
-        if (!res.writableEnded) {
-          sendOpenAiSseData(res, {
-            error: {
-              message: error instanceof Error ? error.message : i18n.t("web.error.stream_unknown"),
-              type: "server_error"
-            }
-          });
-          sendOpenAiSseData(res, "[DONE]");
-          res.end();
-        }
-      }
-      return;
-    }
-
-    const result = await runtimeSet.privateRuntime.agent.respond(request.message, {
-      signal,
-      externalSystemContext
-    });
-    await appendSharedAssistantMirror(
-      runtimeSet,
-      combineReplyAndProactive(result.text, result.proactiveText)
-    );
-    const content = combineReplyAndProactive(result.text, result.proactiveText);
-    const usage = resolveOpenAiUsage(result.llmUsage, promptUsageSource, content);
-    applyOpenAiCompatHeaders(res, request.sessionId, requestId, promptUsageSource);
-    sendJson(res, 200, {
-      id: completionId,
-      object: "chat.completion",
-      created,
-      model,
-      system_fingerprint: systemFingerprint,
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant",
-            content
-          },
-          finish_reason: "stop"
-        }
-      ],
-      usage
-    });
+    })
+  ) {
     return;
   }
 
@@ -852,101 +484,52 @@ async function routeRequest(
     return;
   }
 
-  if (method === "GET" && pathname === "/api/debug/database") {
-    requireFeatureEnabled(debugApiEnabled, i18n);
-    requireAdminAuthorization(req, adminToken, i18n);
-    const sessionId = normalizeSessionId(url.searchParams.get("sessionId") ?? undefined);
-    const runtimeSet = resolveRuntimeForSession(sessionId);
-    const [privateSnapshot, sharedSnapshot] = await Promise.all([
-      buildDebugDatabaseSnapshot(runtimeSet.privateRuntime, debugState.lastContextBySession.get(sessionId)),
-      buildDebugDatabaseSnapshot(runtimeSet.sharedRuntime, debugState.lastSharedContextBySession.get(sessionId))
-    ]);
-    sendJson(res, 200, {
-      sessionId,
-      ...privateSnapshot,
-      shared: sharedSnapshot
-    });
+  if (
+    await handleDebugRoute({
+      req,
+      res,
+      method,
+      pathname,
+      url,
+      i18n,
+      debugApiEnabled,
+      adminToken,
+      defaultRuntime,
+      resolveRuntimeForSession,
+      debugState,
+      helpers: {
+        sendJson,
+        requireFeatureEnabled,
+        requireAdminAuthorization,
+        normalizeSessionId,
+        parsePositiveInt,
+        buildDebugDatabaseSnapshot,
+        buildDebugBlockDetail
+      }
+    })
+  ) {
     return;
   }
 
-  if (method === "GET" && pathname === "/api/debug/traces") {
-    requireFeatureEnabled(debugApiEnabled, i18n);
-    requireAdminAuthorization(req, adminToken, i18n);
-    const traceRecorder = defaultRuntime.privateRuntime.container.resolve<IDebugTraceRecorder>("debugTraceRecorder");
-    const limit = parsePositiveInt(url.searchParams.get("limit"), 500);
-    sendJson(res, 200, {
-      total: traceRecorder.size(),
-      entries: traceRecorder.list(Math.min(limit, 5000))
-    });
-    return;
-  }
-
-  if (method === "POST" && pathname === "/api/debug/traces/clear") {
-    requireFeatureEnabled(debugApiEnabled, i18n);
-    requireAdminAuthorization(req, adminToken, i18n);
-    const traceRecorder = defaultRuntime.privateRuntime.container.resolve<IDebugTraceRecorder>("debugTraceRecorder");
-    traceRecorder.clear();
-    sendJson(res, 200, { ok: true });
-    return;
-  }
-
-  if (method === "GET" && pathname === "/api/debug/block") {
-    requireFeatureEnabled(debugApiEnabled, i18n);
-    requireAdminAuthorization(req, adminToken, i18n);
-    const blockId = url.searchParams.get("id")?.trim();
-    if (!blockId) {
-      sendJson(res, 400, { error: i18n.t("web.api.error.id_required") });
-      return;
-    }
-    const sessionId = normalizeSessionId(url.searchParams.get("sessionId") ?? undefined);
-    const scope = (url.searchParams.get("scope") ?? "private").trim().toLowerCase();
-    const runtimeSet = resolveRuntimeForSession(sessionId);
-    const targetRuntime = scope === "shared" ? runtimeSet.sharedRuntime : runtimeSet.privateRuntime;
-    const detail = await buildDebugBlockDetail(targetRuntime, blockId);
-    if (!detail) {
-      sendJson(res, 404, { error: i18n.t("web.api.error.block_not_found") });
-      return;
-    }
-    sendJson(res, 200, {
-      sessionId,
-      scope: scope === "shared" ? "shared" : "private",
-      ...detail
-    });
-    return;
-  }
-
-  if (method === "GET" && pathname === "/api/files/list") {
-    requireFeatureEnabled(fileApiEnabled, i18n);
-    requireAdminAuthorization(req, adminToken, i18n);
-    const pathInput = url.searchParams.get("path") ?? ".";
-    const maxEntries = parsePositiveInt(url.searchParams.get("maxEntries"), 200);
-    try {
-      const entries = await fileService.list(pathInput, maxEntries);
-      sendJson(res, 200, { path: pathInput, entries });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
-    }
-    return;
-  }
-
-  if (method === "GET" && pathname === "/api/files/read") {
-    requireFeatureEnabled(fileApiEnabled, i18n);
-    requireAdminAuthorization(req, adminToken, i18n);
-    const pathInput = url.searchParams.get("path")?.trim();
-    if (!pathInput) {
-      sendJson(res, 400, { error: i18n.t("web.api.error.path_required") });
-      return;
-    }
-    const maxBytesRaw = url.searchParams.get("maxBytes");
-    const maxBytes = maxBytesRaw ? parsePositiveInt(maxBytesRaw, 64 * 1024) : undefined;
-    try {
-      const result = await fileService.read(pathInput, maxBytes);
-      sendJson(res, 200, result);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendJson(res, 400, { error: message });
-    }
+  if (
+    await handleFileRoute({
+      req,
+      res,
+      method,
+      pathname,
+      url,
+      i18n,
+      fileApiEnabled,
+      adminToken,
+      fileService,
+      helpers: {
+        sendJson,
+        requireFeatureEnabled,
+        requireAdminAuthorization,
+        parsePositiveInt
+      }
+    })
+  ) {
     return;
   }
 
@@ -1206,49 +789,34 @@ function normalizeOpenAIChatRequest(body: OpenAIChatRequestBody): {
   requestId?: string;
   model?: string;
 } {
-  const sideBag = resolveOpenClawSideBag(body);
-  const message = firstDefinedString([
-    extractOpenAIRequestMessage(body.messages),
-    extractOpenAIInputText(body.input),
-    extractOpenAIRequestMessage(sideBag?.messages),
-    extractOpenAIInputText(sideBag?.input),
-    sideBag?.message,
-    sideBag?.prompt,
-    sideBag?.query,
-    body.prompt,
-    body.query
-  ]);
-  const sessionId = normalizeSessionId(
-    firstDefinedString([
-      body.sessionId,
-      body.session_id,
-      body.metadata?.sessionId,
-      body.metadata?.session_id,
-      sideBag?.sessionId,
-      sideBag?.session_id,
-      body.user
-    ])
-  );
-  const requestId = firstDefinedString([
-    body.requestId,
-    body.request_id,
-    body.metadata?.requestId,
-    body.metadata?.request_id,
-    sideBag?.requestId,
-    sideBag?.request_id
-  ]);
-  return {
-    message,
-    stream: body.stream === true || sideBag?.stream === true,
-    includeUsage:
-      body.stream_options?.include_usage === true ||
-      body.stream_options?.includeUsage === true ||
-      sideBag?.include_usage === true ||
-      sideBag?.includeUsage === true,
-    sessionId,
-    requestId,
-    model: firstDefinedString([body.model, sideBag?.model])
-  };
+  return normalizeOpenAIChatRequestBridge(body);
+}
+
+function isOpenClawBridgeRequest(req: IncomingMessage, body: OpenAIChatRequestBody): boolean {
+  return isOpenClawBridgeRequestBridge(req, body);
+}
+
+interface OpenAiCompatPassthroughInput {
+  req: IncomingMessage;
+  res: ServerResponse;
+  body: OpenAIChatRequestBody;
+  request: ReturnType<typeof normalizeOpenAIChatRequest>;
+  requestId: string;
+  bridgeMode: BridgeMode;
+  hasOpenClawBridgeSignal: boolean;
+  openaiCompatBypassAgent: boolean;
+  signal: AbortSignal;
+  runtime: ReturnType<typeof createRuntime>;
+  traceRecorder?: IDebugTraceRecorder;
+}
+
+async function executeBridgePassthrough(input: OpenAiCompatPassthroughInput): Promise<BridgeExecutionResult> {
+  return executeBridgePassthroughBridge({
+    ...input,
+    resolveCurrentModelId,
+    applyOpenAiCompatHeaders,
+    traceRecorder: input.traceRecorder
+  });
 }
 
 function resolveOpenClawSideBag(body: OpenAIChatRequestBody): OpenClawSideBag | undefined {
@@ -1262,411 +830,6 @@ function resolveOpenClawSideBag(body: OpenAIChatRequestBody): OpenClawSideBag | 
     body.metadata?.openclaw?.sidecar,
     body.metadata?.openclaw?.sidebag
   ]);
-}
-
-function isOpenClawBridgeRequest(req: IncomingMessage, body: OpenAIChatRequestBody): boolean {
-  if (resolveOpenClawSideBag(body)) return true;
-  if (body.openclaw || body.metadata?.openclaw) return true;
-
-  const bridgeHintRaw = firstDefinedString([
-    readHeaderValue(req.headers["x-openclaw-bridge"]),
-    readHeaderValue(req.headers["x-mlex-bridge-mode"])
-  ]);
-  const bridgeHint = bridgeHintRaw?.toLowerCase();
-  if (bridgeHint && ["1", "true", "openclaw", "bridge"].includes(bridgeHint)) {
-    return true;
-  }
-
-  const userAgent = readHeaderValue(req.headers["user-agent"])?.toLowerCase();
-  return typeof userAgent === "string" && userAgent.includes("openclaw");
-}
-
-interface OpenAiCompatPassthroughInput {
-  req: IncomingMessage;
-  res: ServerResponse;
-  body: OpenAIChatRequestBody;
-  request: ReturnType<typeof normalizeOpenAIChatRequest>;
-  requestId: string;
-  signal: AbortSignal;
-  runtime: ReturnType<typeof createRuntime>;
-}
-
-interface OpenAiCompatPassthroughTarget {
-  endpoint: string;
-  headers: Record<string, string>;
-  includeModelInBody: boolean;
-}
-
-async function tryHandleOpenAiCompatPassthrough(input: OpenAiCompatPassthroughInput): Promise<boolean> {
-  const target = resolveOpenAiCompatPassthroughTarget(input.runtime.config);
-  if (!target) return false;
-
-  const payload = buildOpenAiCompatPassthroughPayload(
-    input.body,
-    input.request,
-    resolveCurrentModelId(input.runtime.config),
-    target.includeModelInBody
-  );
-  const promptUsageSource = normalizeOpenAIChatRequest(payload as OpenAIChatRequestBody).message;
-
-  try {
-    await recordBridgeFileQueryRelations(input.runtime, payload, input.request.sessionId);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    console.warn(`[web] bridge relation projection failed: ${reason}`);
-  }
-
-  const upstream = await fetch(target.endpoint, {
-    method: "POST",
-    headers: target.headers,
-    body: JSON.stringify(payload),
-    signal: input.signal
-  });
-
-  input.res.statusCode = upstream.status;
-  copyResponseHeadersFromUpstream(input.res, upstream);
-  applyOpenAiCompatHeaders(input.res, input.request.sessionId, input.requestId, promptUsageSource);
-
-  if (!upstream.body) {
-    const text = await upstream.text();
-    input.res.end(text);
-    return true;
-  }
-
-  const readable = Readable.fromWeb(upstream.body as ReadableStream<Uint8Array>);
-  readable.on("error", () => {
-    if (!input.res.writableEnded) {
-      input.res.end();
-    }
-  });
-  readable.pipe(input.res);
-  return true;
-}
-
-function resolveOpenAiCompatPassthroughTarget(
-  config: AppConfig
-): OpenAiCompatPassthroughTarget | undefined {
-  const service = config.service;
-  if (service.provider === "openai-compatible") {
-    if (!service.openaiCompatibleApiKey || !service.openaiCompatibleBaseUrl) return undefined;
-    return {
-      endpoint: buildOpenAiCompatEndpoint(service.openaiCompatibleBaseUrl, "/chat/completions"),
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${service.openaiCompatibleApiKey}`
-      },
-      includeModelInBody: true
-    };
-  }
-  if (service.provider === "openai") {
-    if (!service.openaiApiKey) return undefined;
-    return {
-      endpoint: buildOpenAiCompatEndpoint(service.openaiBaseUrl, "/chat/completions"),
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${service.openaiApiKey}`
-      },
-      includeModelInBody: true
-    };
-  }
-  if (service.provider === "deepseek-reasoner") {
-    if (!service.deepseekApiKey) return undefined;
-    return {
-      endpoint: buildOpenAiCompatEndpoint(service.deepseekBaseUrl, "/chat/completions"),
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${service.deepseekApiKey}`
-      },
-      includeModelInBody: true
-    };
-  }
-  if (service.provider === "openrouter") {
-    if (!service.openrouterApiKey) return undefined;
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${service.openrouterApiKey}`
-    };
-    const appName = normalizeUserMessage(service.openrouterAppName);
-    if (appName) {
-      headers["X-Title"] = appName;
-    }
-    const siteUrl = normalizeUserMessage(service.openrouterSiteUrl);
-    if (siteUrl) {
-      headers["HTTP-Referer"] = siteUrl;
-    }
-    return {
-      endpoint: buildOpenAiCompatEndpoint(service.openrouterBaseUrl, "/chat/completions"),
-      headers,
-      includeModelInBody: true
-    };
-  }
-  if (service.provider === "azure-openai") {
-    if (!service.azureOpenaiApiKey || !service.azureOpenaiEndpoint || !service.azureOpenaiDeployment) {
-      return undefined;
-    }
-    return {
-      endpoint: buildOpenAiCompatEndpoint(
-        service.azureOpenaiEndpoint,
-        `/openai/deployments/${encodeURIComponent(service.azureOpenaiDeployment)}/chat/completions`,
-        {
-          "api-version": service.azureOpenaiApiVersion
-        }
-      ),
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${service.azureOpenaiApiKey}`
-      },
-      includeModelInBody: false
-    };
-  }
-  return undefined;
-}
-
-function buildOpenAiCompatEndpoint(
-  baseUrl: string,
-  requestPath: string,
-  query?: Record<string, string | undefined>
-): string {
-  const endpoint = new URL(requestPath, baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
-  for (const [key, value] of Object.entries(query ?? {})) {
-    if (value === undefined) continue;
-    endpoint.searchParams.set(key, value);
-  }
-  return endpoint.toString();
-}
-
-function buildOpenAiCompatPassthroughPayload(
-  body: OpenAIChatRequestBody,
-  request: ReturnType<typeof normalizeOpenAIChatRequest>,
-  fallbackModel: string,
-  includeModelInBody: boolean
-): Record<string, unknown> {
-  const payload: Record<string, unknown> = {
-    ...(body as Record<string, unknown>)
-  };
-  const sideBag = resolveOpenClawSideBag(body);
-
-  if (payload.messages === undefined && Array.isArray(sideBag?.messages)) {
-    payload.messages = sideBag.messages;
-  }
-  if (payload.input === undefined && sideBag?.input !== undefined) {
-    payload.input = sideBag.input;
-  }
-  if (payload.prompt === undefined && sideBag?.prompt !== undefined) {
-    payload.prompt = sideBag.prompt;
-  }
-  if (payload.query === undefined && sideBag?.query !== undefined) {
-    payload.query = sideBag.query;
-  }
-  if (payload.stream === undefined && typeof sideBag?.stream === "boolean") {
-    payload.stream = sideBag.stream;
-  }
-
-  const streamOptions = asObjectRecord(payload.stream_options);
-  const includeUsageFromSidebag = sideBag?.include_usage === true || sideBag?.includeUsage === true;
-  if (includeUsageFromSidebag) {
-    if (streamOptions) {
-      if (streamOptions.include_usage === undefined && streamOptions.includeUsage === undefined) {
-        streamOptions.include_usage = true;
-      }
-      payload.stream_options = streamOptions;
-    } else {
-      payload.stream_options = { include_usage: true };
-    }
-  }
-
-  if (includeModelInBody) {
-    const currentModel = toNormalizedString(payload.model);
-    if (!currentModel) {
-      payload.model = request.model ?? fallbackModel;
-    }
-  } else {
-    delete payload.model;
-  }
-
-  if (!Array.isArray(payload.messages) && request.message) {
-    payload.messages = [{ role: "user", content: request.message }];
-  }
-
-  delete payload.sidecar;
-  delete payload.sidebag;
-  delete payload.openclaw;
-  const metadata = asObjectRecord(payload.metadata);
-  if (metadata) {
-    delete metadata.sidecar;
-    delete metadata.sidebag;
-    delete metadata.openclaw;
-    if (Object.keys(metadata).length === 0) {
-      delete payload.metadata;
-    } else {
-      payload.metadata = metadata;
-    }
-  }
-
-  return payload;
-}
-
-function copyResponseHeadersFromUpstream(res: ServerResponse, upstream: Response): void {
-  for (const [key, value] of upstream.headers.entries()) {
-    const normalizedKey = key.toLowerCase();
-    if (normalizedKey === "content-length") continue;
-    try {
-      res.setHeader(key, value);
-    } catch {
-      // Ignore unsupported upstream headers.
-    }
-  }
-}
-
-async function recordBridgeFileQueryRelations(
-  runtime: ReturnType<typeof createRuntime>,
-  payload: Record<string, unknown>,
-  sessionId: string
-): Promise<void> {
-  const filePaths = extractBridgeFileQueryPaths(payload);
-  if (filePaths.length === 0) return;
-
-  const relationStore = runtime.container.resolve<IRelationStore>("relationStore");
-  const activeBlockId = runtime.memoryManager.getActiveBlockId?.();
-  const baseTime = Date.now();
-
-  for (let index = 0; index < filePaths.length; index += 1) {
-    const normalizedPath = normalizeBridgeFilePath(filePaths[index]);
-    if (!normalizedPath) continue;
-    const fileEntityId = `file:${normalizedPath}`;
-    const snapshotId = `snapshot:${normalizedPath}#bridge-${createHash("sha1")
-      .update(`${sessionId}|${normalizedPath}|${baseTime}|${index}`)
-      .digest("hex")
-      .slice(0, 12)}`;
-    const timestamp = baseTime + index * 2;
-
-    await relationStore.add({
-      src: snapshotId,
-      dst: fileEntityId,
-      type: RelationType.SNAPSHOT_OF_FILE,
-      timestamp,
-      confidence: 1
-    });
-
-    if (activeBlockId) {
-      await relationStore.add({
-        src: fileEntityId,
-        dst: activeBlockId,
-        type: RelationType.FILE_MENTIONS_BLOCK,
-        timestamp: timestamp + 1,
-        confidence: 0.75
-      });
-    }
-  }
-}
-
-function extractBridgeFileQueryPaths(payload: Record<string, unknown>): string[] {
-  const output = new Set<string>();
-  const messages = extractBridgeMessages(payload);
-  for (const message of messages) {
-    const entry = asObjectRecord(message);
-    if (!entry) continue;
-
-    const messageToolName = resolveToolName(entry);
-    if (isBridgeFileReadToolName(messageToolName)) {
-      collectPathsFromUnknown(entry, output);
-    }
-
-    const toolCalls = entry.tool_calls;
-    if (Array.isArray(toolCalls)) {
-      for (const toolCall of toolCalls) {
-        const callEntry = asObjectRecord(toolCall);
-        if (!callEntry) continue;
-        const functionEntry = asObjectRecord(callEntry.function);
-        const callToolName = resolveToolName(functionEntry ?? callEntry);
-        if (!isBridgeFileReadToolName(callToolName)) continue;
-        collectPathsFromUnknown(callEntry, output);
-      }
-    }
-  }
-  return [...output];
-}
-
-function extractBridgeMessages(payload: Record<string, unknown>): unknown[] {
-  const messages = payload.messages;
-  if (Array.isArray(messages)) return messages;
-
-  const input = payload.input;
-  if (Array.isArray(input)) return input;
-  if (input && typeof input === "object") return [input];
-  return [];
-}
-
-function resolveToolName(value: Record<string, unknown> | undefined): string | undefined {
-  if (!value) return undefined;
-  return firstDefinedString([
-    toNormalizedString(value.name),
-    toNormalizedString(value.tool),
-    toNormalizedString(value.toolName)
-  ]);
-}
-
-function isBridgeFileReadToolName(name: string | undefined): boolean {
-  const normalized = name?.trim().toLowerCase();
-  if (!normalized) return false;
-  if (normalized === "cat" || normalized === "read_file") return true;
-  if (normalized.includes("readonly.read")) return true;
-  if (normalized.includes("workspace.read")) return true;
-  if (normalized.includes("file.read")) return true;
-  return normalized.includes("read") && normalized.includes("file");
-}
-
-function collectPathsFromUnknown(value: unknown, output: Set<string>): void {
-  if (!value) return;
-
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (!trimmed) return;
-    const parsed = safeJsonParse<unknown>(trimmed);
-    if (parsed) {
-      collectPathsFromUnknown(parsed, output);
-    }
-    return;
-  }
-
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      collectPathsFromUnknown(entry, output);
-    }
-    return;
-  }
-
-  if (typeof value !== "object") return;
-  const record = value as Record<string, unknown>;
-  addPathCandidate(record.path, output);
-  addPathCandidate(record.filePath, output);
-  addPathCandidate(record.filepath, output);
-  addPathCandidate(record.targetPath, output);
-
-  if (Array.isArray(record.paths)) {
-    for (const item of record.paths) {
-      addPathCandidate(item, output);
-    }
-  }
-
-  for (const nested of [record.args, record.arguments, record.function, record.content]) {
-    collectPathsFromUnknown(nested, output);
-  }
-}
-
-function addPathCandidate(value: unknown, output: Set<string>): void {
-  if (typeof value !== "string") return;
-  const normalized = normalizeUserMessage(value);
-  if (!normalized) return;
-  if (normalized.startsWith("http://") || normalized.startsWith("https://")) return;
-  output.add(normalized);
-}
-
-function normalizeBridgeFilePath(pathInput: string | undefined): string | undefined {
-  const normalized = normalizeUserMessage(pathInput);
-  if (!normalized) return undefined;
-  const absolutePath = isAbsolute(normalized) ? normalized : resolve(process.cwd(), normalized);
-  return absolutePath.replace(/\\/g, "/");
 }
 
 function asObjectRecord(value: unknown): Record<string, unknown> | undefined {

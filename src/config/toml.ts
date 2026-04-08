@@ -271,6 +271,7 @@ function mapComponent(value: unknown, filePath: string, fieldPath: string): Deep
   const table = expectTable(value, filePath, fieldPath);
   const output: DeepPartial<ComponentConfig> = {};
 
+  assignString(output, "bridgeMode", table.bridgeMode, filePath, `${fieldPath}.bridgeMode`);
   assignString(output, "locale", table.locale, filePath, `${fieldPath}.locale`);
   assignString(output, "chunkStrategy", table.chunkStrategy, filePath, `${fieldPath}.chunkStrategy`);
   assignString(output, "storageBackend", table.storageBackend, filePath, `${fieldPath}.storageBackend`);
@@ -315,8 +316,18 @@ function mapComponent(value: unknown, filePath: string, fieldPath: string): Deep
   assignString(output, "relationStoreFilePath", table.relationStoreFilePath, filePath, `${fieldPath}.relationStoreFilePath`);
   assignString(output, "graphEmbeddingMethod", table.graphEmbeddingMethod, filePath, `${fieldPath}.graphEmbeddingMethod`);
   assignString(output, "searchProvider", table.searchProvider, filePath, `${fieldPath}.searchProvider`);
+  assignString(output, "searchApiFlavor", table.searchApiFlavor, filePath, `${fieldPath}.searchApiFlavor`);
   assignString(output, "searchEndpoint", table.searchEndpoint, filePath, `${fieldPath}.searchEndpoint`);
   assignString(output, "searchApiKey", table.searchApiKey, filePath, `${fieldPath}.searchApiKey`);
+  assignString(output, "searchApiFreshness", table.searchApiFreshness, filePath, `${fieldPath}.searchApiFreshness`);
+  assignBoolean(
+    output,
+    "searchApiSummaryEnabled",
+    table.searchApiSummaryEnabled,
+    filePath,
+    `${fieldPath}.searchApiSummaryEnabled`
+  );
+  assignString(output, "searchApiMarket", table.searchApiMarket, filePath, `${fieldPath}.searchApiMarket`);
   assignString(output, "webFetchEndpoint", table.webFetchEndpoint, filePath, `${fieldPath}.webFetchEndpoint`);
   assignString(output, "webFetchApiKey", table.webFetchApiKey, filePath, `${fieldPath}.webFetchApiKey`);
   assignStringArray(output, "searchSeedQueries", table.searchSeedQueries, filePath, `${fieldPath}.searchSeedQueries`);
@@ -324,8 +335,33 @@ function mapComponent(value: unknown, filePath: string, fieldPath: string): Deep
   assignBoolean(output, "webDebugApiEnabled", table.webDebugApiEnabled, filePath, `${fieldPath}.webDebugApiEnabled`);
   assignBoolean(output, "webFileApiEnabled", table.webFileApiEnabled, filePath, `${fieldPath}.webFileApiEnabled`);
   assignBoolean(output, "webExposeRawContext", table.webExposeRawContext, filePath, `${fieldPath}.webExposeRawContext`);
+  assignBoolean(
+    output,
+    "openaiCompatBypassAgent",
+    table.openaiCompatBypassAgent,
+    filePath,
+    `${fieldPath}.openaiCompatBypassAgent`
+  );
   assignNumber(output, "webRequestBodyMaxBytes", table.webRequestBodyMaxBytes, filePath, `${fieldPath}.webRequestBodyMaxBytes`);
   assignString(output, "webAdminToken", table.webAdminToken, filePath, `${fieldPath}.webAdminToken`);
+  assignBoolean(output, "toolFileWriteEnabled", table.toolFileWriteEnabled, filePath, `${fieldPath}.toolFileWriteEnabled`);
+  assignNumber(output, "toolFileWriteMaxBytes", table.toolFileWriteMaxBytes, filePath, `${fieldPath}.toolFileWriteMaxBytes`);
+  assignBoolean(output, "toolTerminalEnabled", table.toolTerminalEnabled, filePath, `${fieldPath}.toolTerminalEnabled`);
+  assignNumber(output, "toolTerminalTimeoutMs", table.toolTerminalTimeoutMs, filePath, `${fieldPath}.toolTerminalTimeoutMs`);
+  assignNumber(
+    output,
+    "toolTerminalMaxOutputChars",
+    table.toolTerminalMaxOutputChars,
+    filePath,
+    `${fieldPath}.toolTerminalMaxOutputChars`
+  );
+  assignBoolean(output, "mcpEnabled", table.mcpEnabled, filePath, `${fieldPath}.mcpEnabled`);
+  assignString(output, "mcpCommand", table.mcpCommand, filePath, `${fieldPath}.mcpCommand`);
+  assignStringArray(output, "mcpArgs", table.mcpArgs, filePath, `${fieldPath}.mcpArgs`);
+  assignString(output, "mcpWorkdir", table.mcpWorkdir, filePath, `${fieldPath}.mcpWorkdir`);
+  assignNumber(output, "mcpInitTimeoutMs", table.mcpInitTimeoutMs, filePath, `${fieldPath}.mcpInitTimeoutMs`);
+  assignNumber(output, "mcpToolTimeoutMs", table.mcpToolTimeoutMs, filePath, `${fieldPath}.mcpToolTimeoutMs`);
+  assignStringArray(output, "mcpToolsAllowlist", table.mcpToolsAllowlist, filePath, `${fieldPath}.mcpToolsAllowlist`);
   assignBoolean(output, "debugTraceEnabled", table.debugTraceEnabled, filePath, `${fieldPath}.debugTraceEnabled`);
   assignNumber(output, "debugTraceMaxEntries", table.debugTraceMaxEntries, filePath, `${fieldPath}.debugTraceMaxEntries`);
 

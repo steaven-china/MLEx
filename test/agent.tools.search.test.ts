@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { BuiltinAgentToolExecutor } from "../src/agent/AgentToolExecutor.js";
+import type { IMcpToolClient } from "../src/mcp/StdioMcpClient.js";
 import type { IMemoryManager } from "../src/memory/IMemoryManager.js";
 import type { ISearchProvider, SearchQuery, SearchResponse } from "../src/search/ISearchProvider.js";
 import type { IWebPageFetcher, WebPageFetchResult } from "../src/search/IWebPageFetcher.js";
@@ -76,6 +77,32 @@ class FakeRelationStore {
   }): Promise<void> {
     this.relations.push(relation);
   }
+}
+
+class MockMcpClient implements IMcpToolClient {
+  public listCalls = 0;
+  public toolCalls: Array<{ name: string; args: Record<string, unknown>; timeoutMs: number | undefined }> = [];
+
+  constructor(
+    private readonly tools: Array<{ name: string; description?: string; inputSchema?: unknown }> = [],
+    private readonly response: unknown = { content: [{ type: "text", text: "ok" }], isError: false }
+  ) {}
+
+  async listTools(): Promise<Array<{ name: string; description?: string; inputSchema?: unknown }>> {
+    this.listCalls += 1;
+    return this.tools;
+  }
+
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    timeoutMs?: number
+  ): Promise<unknown> {
+    this.toolCalls.push({ name, args, timeoutMs });
+    return this.response;
+  }
+
+  async close(): Promise<void> {}
 }
 
 describe("BuiltinAgentToolExecutor search tools", () => {
@@ -248,5 +275,128 @@ describe("BuiltinAgentToolExecutor search tools", () => {
     const payload = JSON.parse(result.content) as { truncated?: boolean; content?: string };
     expect(payload.truncated).toBe(true);
     expect(payload.content).toContain("...[truncated]");
+  });
+
+  test("records proactive questioning control for llm", async () => {
+    const memory = new FakeMemoryManager();
+    const tool = new BuiltinAgentToolExecutor({
+      workspaceRoot: process.cwd(),
+      memoryManager: memory
+    });
+
+    const result = await tool.execute({
+      name: "agent.proactive.questioning",
+      args: {
+        enabled: false,
+        reason: "user asked to stop follow-up questions"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(memory.events).toHaveLength(1);
+    expect(memory.events[0]?.metadata?.tool).toBe("agent.proactive.questioning");
+    expect(memory.events[0]?.metadata?.questioningEnabled).toBe(false);
+
+    const payload = JSON.parse(result.content) as { enabled?: boolean; reason?: string | null };
+    expect(payload.enabled).toBe(false);
+    expect(payload.reason).toBe("user asked to stop follow-up questions");
+  });
+
+  test("rejects proactive questioning control without enabled flag", async () => {
+    const memory = new FakeMemoryManager();
+    const tool = new BuiltinAgentToolExecutor({
+      workspaceRoot: process.cwd(),
+      memoryManager: memory
+    });
+
+    const result = await tool.execute({
+      name: "agent.proactive.questioning",
+      args: {}
+    });
+
+    expect(result.ok).toBe(false);
+    expect(memory.events).toHaveLength(0);
+    expect(result.content).toContain("args.enabled");
+  });
+
+  test("writes workspace file when workspace.write is enabled", async () => {
+    const memory = new FakeMemoryManager();
+    const tool = new BuiltinAgentToolExecutor({
+      workspaceRoot: process.cwd(),
+      memoryManager: memory,
+      fileWriteEnabled: true
+    });
+
+    const path = `.mlex/test/workspace-write-${Date.now()}.txt`;
+    const result = await tool.execute({
+      name: "workspace.write",
+      args: {
+        path,
+        content: "hello workspace"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(memory.events).toHaveLength(1);
+    expect(memory.events[0]?.metadata?.tool).toBe("workspace.write");
+    const payload = JSON.parse(result.content) as { path?: string; bytesWritten?: number };
+    expect(payload.path).toBe(path.replace(/\\/g, "/"));
+    expect((payload.bytesWritten ?? 0)).toBeGreaterThan(0);
+  });
+
+  test("runs terminal command when terminal.run is enabled", async () => {
+    const memory = new FakeMemoryManager();
+    const tool = new BuiltinAgentToolExecutor({
+      workspaceRoot: process.cwd(),
+      memoryManager: memory,
+      terminalEnabled: true
+    });
+
+    const result = await tool.execute({
+      name: "terminal.run",
+      args: {
+        command: process.platform === "win32" ? "echo hello-mlex" : "printf hello-mlex"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(memory.events).toHaveLength(1);
+    expect(memory.events[0]?.metadata?.tool).toBe("terminal.run");
+    const payload = JSON.parse(result.content) as { output?: string; exitCode?: number };
+    expect(payload.exitCode).toBe(0);
+    expect(payload.output).toContain("hello-mlex");
+  });
+
+  test("lists and calls mcp tools when mcp client is configured", async () => {
+    const memory = new FakeMemoryManager();
+    const mcpClient = new MockMcpClient(
+      [{ name: "search_docs", description: "search docs" }],
+      { content: [{ type: "text", text: "doc hit" }], isError: false }
+    );
+    const tool = new BuiltinAgentToolExecutor({
+      workspaceRoot: process.cwd(),
+      memoryManager: memory,
+      mcpClient
+    });
+
+    const listed = await tool.execute({
+      name: "mcp.list_tools",
+      args: {}
+    });
+    expect(listed.ok).toBe(true);
+    const listedPayload = JSON.parse(listed.content) as { count?: number };
+    expect(listedPayload.count).toBe(1);
+
+    const called = await tool.execute({
+      name: "mcp.call",
+      args: {
+        tool: "search_docs",
+        arguments: { query: "planner" }
+      }
+    });
+    expect(called.ok).toBe(true);
+    expect(mcpClient.toolCalls).toHaveLength(1);
+    expect(mcpClient.toolCalls[0]?.name).toBe("search_docs");
+    expect(memory.events.some((event) => event.metadata?.tool === "mcp.call")).toBe(true);
   });
 });

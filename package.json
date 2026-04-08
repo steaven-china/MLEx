@@ -16,6 +16,7 @@
     "benchmark:sqlite": "tsx src/tools/sqlite-benchmark.ts",
     "bench:compare": "tsx scripts/bench-compare.ts",
     "bench:compare:quick": "tsx scripts/bench-compare.ts --quick",
+    "smoke:openclaw": "tsx scripts/openclaw-smoke.ts",
     "verify:arch": "npm run typecheck && npm test && npm run build && npm run acceptance",
     "test": "vitest run",
     "test:watch": "vitest",

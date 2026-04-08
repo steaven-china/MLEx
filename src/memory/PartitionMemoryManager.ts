@@ -10,6 +10,7 @@ import { RelationType } from "../types.js";
 import type {
   BlockRef,
   Context,
+  ConversationStats,
   DirectionalIntent,
   ManagerConfig,
   MemoryEvent,
@@ -437,6 +438,29 @@ export class PartitionMemoryManager implements IMemoryManager {
 
   getActiveBlockId(): string | undefined {
     return this.activeBlock.rawEvents.length > 0 ? this.activeBlock.id : this.lastSealedBlockId;
+  }
+
+  getConversationStats(): ConversationStats {
+    const stats: ConversationStats = {
+      totalEvents: 0,
+      userEvents: 0,
+      assistantEvents: 0,
+      toolEvents: 0,
+      systemEvents: 0,
+      dialogueTurns: 0
+    };
+
+    for (const block of this.blockTable.values()) {
+      for (const event of block.rawEvents) {
+        accumulateConversationStats(stats, event);
+      }
+    }
+    for (const event of this.activeBlock.rawEvents) {
+      accumulateConversationStats(stats, event);
+    }
+
+    stats.dialogueTurns = stats.userEvents;
+    return stats;
   }
 
   getProactiveSignalDiagnostics(): ProactiveSignalDiagnostics {
@@ -1349,6 +1373,23 @@ function recencyAffinity(currentEnd: number, candidateEnd: number): number {
 
 function toUtcSeconds(timestampMs: number): number {
   return Math.floor(timestampMs / 1000);
+}
+
+function accumulateConversationStats(stats: ConversationStats, event: MemoryEvent): void {
+  stats.totalEvents += 1;
+  if (event.role === "user") {
+    stats.userEvents += 1;
+    return;
+  }
+  if (event.role === "assistant") {
+    stats.assistantEvents += 1;
+    return;
+  }
+  if (event.role === "tool") {
+    stats.toolEvents += 1;
+    return;
+  }
+  stats.systemEvents += 1;
 }
 
 function computeRank(scores: Map<string, number>, blockId: string, fallbackRank = -1): number {

@@ -45,6 +45,7 @@ export interface ServiceConfig {
 }
 
 export interface ComponentConfig {
+  bridgeMode: "off" | "auto" | "force";
   locale: "zh-CN" | "en-US";
   chunkStrategy: "fixed" | "semantic" | "hybrid";
   storageBackend: "memory" | "sqlite" | "lance" | "chroma";
@@ -80,8 +81,12 @@ export interface ComponentConfig {
   relationStoreFilePath: string;
   graphEmbeddingMethod: "node2vec" | "transe";
   searchProvider: "http";
+  searchApiFlavor: "generic" | "bocha" | "bing" | "auto";
   searchEndpoint?: string;
   searchApiKey?: string;
+  searchApiFreshness?: string;
+  searchApiSummaryEnabled: boolean;
+  searchApiMarket?: string;
   webFetchEndpoint?: string;
   webFetchApiKey?: string;
   searchSeedQueries: string[];
@@ -89,8 +94,21 @@ export interface ComponentConfig {
   webDebugApiEnabled: boolean;
   webFileApiEnabled: boolean;
   webExposeRawContext: boolean;
+  openaiCompatBypassAgent: boolean;
   webRequestBodyMaxBytes: number;
   webAdminToken?: string;
+  toolFileWriteEnabled: boolean;
+  toolFileWriteMaxBytes: number;
+  toolTerminalEnabled: boolean;
+  toolTerminalTimeoutMs: number;
+  toolTerminalMaxOutputChars: number;
+  mcpEnabled: boolean;
+  mcpCommand?: string;
+  mcpArgs: string[];
+  mcpWorkdir?: string;
+  mcpInitTimeoutMs: number;
+  mcpToolTimeoutMs: number;
+  mcpToolsAllowlist: string[];
   debugTraceEnabled: boolean;
   debugTraceMaxEntries: number;
 }
@@ -110,6 +128,12 @@ const DEFAULT_LOCAL_EMBED_BATCH_WINDOW_MS = 5;
 const DEFAULT_LOCAL_EMBED_MAX_BATCH_SIZE = 32;
 const DEFAULT_LOCAL_EMBED_QUEUE_MAX_PENDING = 1024;
 const DEFAULT_LOCAL_EMBED_EXECUTION_PROVIDER = "auto";
+const DEFAULT_BRIDGE_MODE: ComponentConfig["bridgeMode"] = "auto";
+const DEFAULT_TOOL_FILE_WRITE_MAX_BYTES = 256 * 1024;
+const DEFAULT_TOOL_TERMINAL_TIMEOUT_MS = 2 * 60 * 1000;
+const DEFAULT_TOOL_TERMINAL_MAX_OUTPUT_CHARS = 24 * 1024;
+const DEFAULT_MCP_INIT_TIMEOUT_MS = 15 * 1000;
+const DEFAULT_MCP_TOOL_TIMEOUT_MS = 60 * 1000;
 
 export const DEFAULT_MANAGER_CONFIG: ManagerConfig = {
   maxTokensPerBlock: 320,
@@ -594,6 +618,9 @@ export function loadConfig(
   };
 
   const component: ComponentConfig = {
+    bridgeMode:
+      (process.env.MLEX_BRIDGE_MODE as ComponentConfig["bridgeMode"] | undefined) ??
+      DEFAULT_BRIDGE_MODE,
     locale:
       ((process.env.MLEX_LOCALE as ComponentConfig["locale"] | undefined) ?? "zh-CN") === "en-US"
         ? "en-US"
@@ -654,8 +681,14 @@ export function loadConfig(
       (process.env.MLEX_GRAPH_EMBEDDING_METHOD as ComponentConfig["graphEmbeddingMethod"]) ??
       "node2vec",
     searchProvider: (process.env.MLEX_SEARCH_PROVIDER as ComponentConfig["searchProvider"]) ?? "http",
+    searchApiFlavor:
+      (process.env.MLEX_SEARCH_API_FLAVOR as ComponentConfig["searchApiFlavor"]) ?? "generic",
     searchEndpoint: process.env.MLEX_SEARCH_ENDPOINT,
     searchApiKey: process.env.MLEX_SEARCH_API_KEY,
+    searchApiFreshness: process.env.MLEX_SEARCH_API_FRESHNESS,
+    searchApiSummaryEnabled:
+      (process.env.MLEX_SEARCH_API_SUMMARY_ENABLED ?? "true").toLowerCase() !== "false",
+    searchApiMarket: process.env.MLEX_SEARCH_API_MARKET,
     webFetchEndpoint: process.env.MLEX_WEB_FETCH_ENDPOINT,
     webFetchApiKey: process.env.MLEX_WEB_FETCH_API_KEY,
     searchSeedQueries: parseEnvCsv("MLEX_SEARCH_SEED_QUERIES"),
@@ -666,8 +699,33 @@ export function loadConfig(
       (process.env.MLEX_WEB_FILE_API_ENABLED ?? "false").toLowerCase() === "true",
     webExposeRawContext:
       (process.env.MLEX_WEB_EXPOSE_RAW_CONTEXT ?? "false").toLowerCase() === "true",
+    openaiCompatBypassAgent:
+      (process.env.MLEX_OPENAI_COMPAT_BYPASS_AGENT ?? "false").toLowerCase() === "true",
     webRequestBodyMaxBytes: parseEnvNumber("MLEX_WEB_REQUEST_BODY_MAX_BYTES", 256 * 1024),
     webAdminToken: process.env.MLEX_WEB_ADMIN_TOKEN,
+    toolFileWriteEnabled:
+      (process.env.MLEX_TOOL_FILE_WRITE_ENABLED ?? "false").toLowerCase() === "true",
+    toolFileWriteMaxBytes: parseEnvNumber(
+      "MLEX_TOOL_FILE_WRITE_MAX_BYTES",
+      DEFAULT_TOOL_FILE_WRITE_MAX_BYTES
+    ),
+    toolTerminalEnabled:
+      (process.env.MLEX_TOOL_TERMINAL_ENABLED ?? "false").toLowerCase() === "true",
+    toolTerminalTimeoutMs: parseEnvNumber(
+      "MLEX_TOOL_TERMINAL_TIMEOUT_MS",
+      DEFAULT_TOOL_TERMINAL_TIMEOUT_MS
+    ),
+    toolTerminalMaxOutputChars: parseEnvNumber(
+      "MLEX_TOOL_TERMINAL_MAX_OUTPUT_CHARS",
+      DEFAULT_TOOL_TERMINAL_MAX_OUTPUT_CHARS
+    ),
+    mcpEnabled: (process.env.MLEX_MCP_ENABLED ?? "false").toLowerCase() === "true",
+    mcpCommand: process.env.MLEX_MCP_COMMAND,
+    mcpArgs: parseEnvCsv("MLEX_MCP_ARGS"),
+    mcpWorkdir: process.env.MLEX_MCP_WORKDIR,
+    mcpInitTimeoutMs: parseEnvNumber("MLEX_MCP_INIT_TIMEOUT_MS", DEFAULT_MCP_INIT_TIMEOUT_MS),
+    mcpToolTimeoutMs: parseEnvNumber("MLEX_MCP_TOOL_TIMEOUT_MS", DEFAULT_MCP_TOOL_TIMEOUT_MS),
+    mcpToolsAllowlist: parseEnvCsv("MLEX_MCP_TOOL_ALLOWLIST"),
     debugTraceEnabled:
       (process.env.MLEX_DEBUG_TRACE_ENABLED ?? "true").toLowerCase() !== "false",
     debugTraceMaxEntries: parseEnvNumber("MLEX_DEBUG_TRACE_MAX_ENTRIES", 2000)
@@ -691,6 +749,7 @@ function validateConfig(config: AppConfig): AppConfig {
   ]);
   validateEnum("component.locale", config.component.locale, ["zh-CN", "en-US"]);
   validateEnum("component.chunkStrategy", config.component.chunkStrategy, ["fixed", "semantic", "hybrid"]);
+  validateEnum("component.bridgeMode", config.component.bridgeMode, ["off", "auto", "force"]);
   validateEnum("component.embedder", config.component.embedder, ["hash", "local", "hybrid"]);
   validateEnum("component.storageBackend", config.component.storageBackend, [
     "memory",
@@ -722,6 +781,12 @@ function validateConfig(config: AppConfig): AppConfig {
   ]);
   validateEnum("component.tagger", config.component.tagger, ["heuristic", "openai", "deepseek"]);
   validateEnum("component.searchProvider", config.component.searchProvider, ["http"]);
+  validateEnum("component.searchApiFlavor", config.component.searchApiFlavor, [
+    "generic",
+    "bocha",
+    "bing",
+    "auto"
+  ]);
   validateEnum("manager.searchAugmentMode", config.manager.searchAugmentMode, [
     "lazy",
     "auto",
@@ -876,6 +941,47 @@ function validateConfig(config: AppConfig): AppConfig {
   }
   if (config.component.localEmbedExecutionProvider.trim().length === 0) {
     throw new Error("Invalid component.localEmbedExecutionProvider: must be non-empty");
+  }
+  if (typeof config.component.toolFileWriteEnabled !== "boolean") {
+    throw new Error("Invalid component.toolFileWriteEnabled: must be boolean");
+  }
+  if (typeof config.component.openaiCompatBypassAgent !== "boolean") {
+    throw new Error("Invalid component.openaiCompatBypassAgent: must be boolean");
+  }
+  validateIntegerAtLeast(
+    "component.toolFileWriteMaxBytes",
+    config.component.toolFileWriteMaxBytes,
+    1
+  );
+  if (typeof config.component.toolTerminalEnabled !== "boolean") {
+    throw new Error("Invalid component.toolTerminalEnabled: must be boolean");
+  }
+  validateIntegerAtLeast(
+    "component.toolTerminalTimeoutMs",
+    config.component.toolTerminalTimeoutMs,
+    1_000
+  );
+  validateIntegerAtLeast(
+    "component.toolTerminalMaxOutputChars",
+    config.component.toolTerminalMaxOutputChars,
+    256
+  );
+  if (typeof config.component.mcpEnabled !== "boolean") {
+    throw new Error("Invalid component.mcpEnabled: must be boolean");
+  }
+  if (!Array.isArray(config.component.mcpArgs) || config.component.mcpArgs.some((item) => typeof item !== "string")) {
+    throw new Error("Invalid component.mcpArgs: must be string[]");
+  }
+  if (
+    !Array.isArray(config.component.mcpToolsAllowlist) ||
+    config.component.mcpToolsAllowlist.some((item) => typeof item !== "string")
+  ) {
+    throw new Error("Invalid component.mcpToolsAllowlist: must be string[]");
+  }
+  validateIntegerAtLeast("component.mcpInitTimeoutMs", config.component.mcpInitTimeoutMs, 1_000);
+  validateIntegerAtLeast("component.mcpToolTimeoutMs", config.component.mcpToolTimeoutMs, 1_000);
+  if (config.component.mcpEnabled && !(config.component.mcpCommand && config.component.mcpCommand.trim().length > 0)) {
+    throw new Error("Invalid component.mcpCommand: must be set when component.mcpEnabled=true");
   }
   return config;
 }

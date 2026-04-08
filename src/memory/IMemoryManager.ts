@@ -1,4 +1,10 @@
-import type { BlockRef, Context, MemoryEvent, ProactiveTriggerSource } from "../types.js";
+import type {
+  BlockRef,
+  Context,
+  ConversationStats,
+  MemoryEvent,
+  ProactiveTriggerSource
+} from "../types.js";
 
 export interface IMemoryManager {
   addEvent(event: MemoryEvent): Promise<void>;
@@ -8,4 +14,5 @@ export interface IMemoryManager {
   retrieveBlocks(query: string): Promise<BlockRef[]>;
   tickProactiveWakeup(): Promise<void>;
   getActiveBlockId?(): string | undefined;
+  getConversationStats?(): ConversationStats | undefined;
 }

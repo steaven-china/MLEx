@@ -5,7 +5,9 @@ import { resolve } from "node:path";
 import type { IDebugTraceRecorder } from "../debug/DebugTraceRecorder.js";
 import type { I18n } from "../i18n/index.js";
 import { ReadonlyFileService } from "../files/ReadonlyFileService.js";
+import { WorkspaceFileService, type WorkspaceWriteMode } from "../files/WorkspaceFileService.js";
 import type { IFileAccessRecorder } from "../memory/file/FileAccessRecorder.js";
+import type { IMcpToolClient } from "../mcp/StdioMcpClient.js";
 import type { IMemoryManager } from "../memory/IMemoryManager.js";
 import { RelationType, type RelationLabel, type SearchAugmentMode } from "../types.js";
 import type { ISearchProvider, SearchResponse } from "../search/ISearchProvider.js";
@@ -25,6 +27,7 @@ export interface AgentToolResult {
 export interface IAgentToolExecutor {
   instructions(): string;
   execute(call: AgentToolCall): Promise<AgentToolResult>;
+  close?(): Promise<void>;
 }
 
 export interface BuiltinAgentToolExecutorConfig {
@@ -46,19 +49,30 @@ export interface BuiltinAgentToolExecutorConfig {
     }) => Promise<void> | void;
   };
   fileAccessRecorder?: IFileAccessRecorder;
+  fileWriteEnabled?: boolean;
+  fileWriteMaxBytes?: number;
+  terminalEnabled?: boolean;
+  terminalTimeoutMs?: number;
+  terminalMaxOutputChars?: number;
+  mcpClient?: IMcpToolClient;
+  mcpToolTimeoutMs?: number;
+  mcpToolsAllowlist?: string[];
   i18n?: I18n;
 }
 
 export class BuiltinAgentToolExecutor implements IAgentToolExecutor {
   private readonly fileService: ReadonlyFileService;
+  private readonly writeService: WorkspaceFileService;
   private testRunInFlight = false;
+  private terminalRunInFlight = false;
 
   constructor(private readonly config: BuiltinAgentToolExecutorConfig) {
     this.fileService = new ReadonlyFileService({ rootPath: config.workspaceRoot });
+    this.writeService = new WorkspaceFileService({ rootPath: config.workspaceRoot });
   }
 
   instructions(): string {
-    return [
+    const lines = [
       this.config.i18n?.t("tool.instruction.header") ?? "You can call tools when needed.",
       this.config.i18n?.t("tool.instruction.only_one_tag") ??
         "If a tool is needed, output ONLY one tag: <tool_call>{\"name\":\"...\",\"args\":{...}}</tool_call>.",
@@ -77,13 +91,36 @@ export class BuiltinAgentToolExecutor implements IAgentToolExecutor {
         "- web.fetch.record args: {\"url\":\"https://example.com/doc\",\"maxChars\":12000}",
       this.config.i18n?.t("tool.instruction.test_run") ??
         "- test.run args: {\"script\":\"typecheck|test|build|verify:arch\"}",
+      this.config.i18n?.t("tool.instruction.agent_proactive_questioning") ??
+        "- agent.proactive.questioning args: {\"enabled\":false,\"reason\":\"user requested no more follow-up questions\"}",
+      ...(this.config.fileWriteEnabled
+        ? [
+            this.config.i18n?.t("tool.instruction.workspace_write") ??
+              "- workspace.write args: {\"path\":\"notes/todo.txt\",\"content\":\"next steps\",\"mode\":\"overwrite|append\",\"createDirs\":true}"
+          ]
+        : []),
+      ...(this.config.terminalEnabled
+        ? [
+            this.config.i18n?.t("tool.instruction.terminal_run") ??
+              "- terminal.run args: {\"command\":\"npm run typecheck\",\"timeoutMs\":120000}"
+          ]
+        : []),
+      ...(this.config.mcpClient
+        ? [
+            this.config.i18n?.t("tool.instruction.mcp_list_tools") ??
+              "- mcp.list_tools args: {}",
+            this.config.i18n?.t("tool.instruction.mcp_call") ??
+              "- mcp.call args: {\"tool\":\"tool_name\",\"arguments\":{\"key\":\"value\"},\"timeoutMs\":60000}"
+          ]
+        : []),
       this.config.i18n?.t("tool.instruction.tool_result") ??
         "After a tool call, you will receive TOOL_RESULT JSON in a user message.",
       this.config.i18n?.t("tool.instruction.multi_round") ??
-        "You may call tools again in later rounds if needed, but only one tool_call per round.",
+      "You may call tools again in later rounds if needed, but only one tool_call per round.",
       this.config.i18n?.t("tool.instruction.final") ??
         "When no more tools are needed, return normal final answer text."
-    ].join("\n");
+    ];
+    return lines.join("\n");
   }
 
   async execute(call: AgentToolCall): Promise<AgentToolResult> {
@@ -129,6 +166,225 @@ export class BuiltinAgentToolExecutor implements IAgentToolExecutor {
       };
       this.config.traceRecorder?.record("tool", "execute.result", { call, result: output });
       return output;
+    }
+
+    if (call.name === "workspace.write") {
+      if (!this.config.fileWriteEnabled) {
+        const result = {
+          ok: false,
+          content:
+            this.config.i18n?.t("tool.error.workspace_write_disabled") ??
+            "workspace.write is disabled by config"
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      const pathInput = asString(call.args.path);
+      if (!pathInput) {
+        const result = {
+          ok: false,
+          content:
+            this.config.i18n?.t("tool.error.workspace_write_requires_path") ??
+            "workspace.write requires args.path"
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      if (typeof call.args.content !== "string") {
+        const result = {
+          ok: false,
+          content:
+            this.config.i18n?.t("tool.error.workspace_write_requires_content") ??
+            "workspace.write requires args.content as string"
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      const mode = normalizeWriteMode(call.args.mode);
+      if (!mode) {
+        const result = {
+          ok: false,
+          content:
+            this.config.i18n?.t("tool.error.workspace_write_invalid_mode") ??
+            "workspace.write args.mode must be overwrite|append"
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      const createDirs = asBoolean(call.args.createDirs, true);
+      const maxBytes = clampInt(
+        call.args.maxBytes,
+        this.config.fileWriteMaxBytes ?? DEFAULT_WORKSPACE_WRITE_MAX_BYTES,
+        1,
+        8 * 1024 * 1024
+      );
+      let writeResult: Awaited<ReturnType<WorkspaceFileService["write"]>>;
+      try {
+        writeResult = await this.writeService.write(pathInput, call.args.content, {
+          mode,
+          createDirs,
+          maxBytes
+        });
+      } catch (error) {
+        const result = {
+          ok: false,
+          content: toErrorMessage(error)
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      const now = Date.now();
+      await this.config.memoryManager.addEvent({
+        id: createId("event"),
+        role: "tool",
+        text:
+          this.config.i18n?.t("tool.event.workspace_write", {
+            cwd: this.config.workspaceRoot,
+            path: writeResult.path,
+            mode: writeResult.mode,
+            bytesWritten: writeResult.bytesWritten,
+            totalBytes: writeResult.totalBytes
+          }) ??
+          `workspace write\ncwd: ${this.config.workspaceRoot}\npath: ${writeResult.path}\nmode: ${writeResult.mode}\nbytes: ${writeResult.bytesWritten}/${writeResult.totalBytes}`,
+        timestamp: now,
+        metadata: {
+          tool: "workspace.write",
+          cwd: this.config.workspaceRoot,
+          path: writeResult.path,
+          requestedPath: pathInput,
+          mode: writeResult.mode,
+          bytesWritten: writeResult.bytesWritten,
+          totalBytes: writeResult.totalBytes,
+          modifiedAt: writeResult.modifiedAt,
+          createDirs
+        }
+      });
+
+      const result = {
+        ok: true,
+        content: JSON.stringify(
+          {
+            path: writeResult.path,
+            mode: writeResult.mode,
+            bytesWritten: writeResult.bytesWritten,
+            totalBytes: writeResult.totalBytes,
+            modifiedAt: writeResult.modifiedAt
+          },
+          null,
+          2
+        )
+      };
+      this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+      return result;
+    }
+
+    if (call.name === "terminal.run") {
+      if (!this.config.terminalEnabled) {
+        const result = {
+          ok: false,
+          content:
+            this.config.i18n?.t("tool.error.terminal_run_disabled") ??
+            "terminal.run is disabled by config"
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      if (this.terminalRunInFlight) {
+        const result = {
+          ok: false,
+          content:
+            this.config.i18n?.t("tool.error.terminal_run_in_flight") ??
+            "terminal.run is already running. Please wait for current run to finish."
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      const command = asString(call.args.command);
+      if (!command) {
+        const result = {
+          ok: false,
+          content:
+            this.config.i18n?.t("tool.error.terminal_run_requires_command") ??
+            "terminal.run requires args.command"
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      const timeoutMs = clampInt(
+        call.args.timeoutMs,
+        this.config.terminalTimeoutMs ?? DEFAULT_TERMINAL_RUN_TIMEOUT_MS,
+        1_000,
+        30 * 60 * 1000
+      );
+      const maxOutputChars = clampInt(
+        call.args.maxOutputChars,
+        this.config.terminalMaxOutputChars ?? DEFAULT_TERMINAL_MAX_OUTPUT_CHARS,
+        256,
+        256 * 1024
+      );
+
+      this.terminalRunInFlight = true;
+      let run: { exitCode: number; stdout: string; stderr: string; timedOut: boolean; durationMs: number };
+      try {
+        run = await runShellCommand(command, this.config.workspaceRoot, timeoutMs);
+      } catch (error) {
+        this.terminalRunInFlight = false;
+        const result = {
+          ok: false,
+          content: toErrorMessage(error)
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      } finally {
+        this.terminalRunInFlight = false;
+      }
+
+      const output = truncateText(`${run.stdout}${run.stderr}`.trim(), maxOutputChars);
+      const ok = run.exitCode === 0 && !run.timedOut;
+      const now = Date.now();
+      await this.config.memoryManager.addEvent({
+        id: createId("event"),
+        role: "tool",
+        text:
+          this.config.i18n?.t("tool.event.terminal_run", {
+            cwd: this.config.workspaceRoot,
+            command,
+            exitCode: run.exitCode,
+            timedOut: run.timedOut ? "true" : "false",
+            durationMs: run.durationMs
+          }) ??
+          `terminal run\ncwd: ${this.config.workspaceRoot}\ncommand: ${command}\nexitCode: ${run.exitCode}\ntimedOut: ${run.timedOut}\ndurationMs: ${run.durationMs}`,
+        timestamp: now,
+        metadata: {
+          tool: "terminal.run",
+          cwd: this.config.workspaceRoot,
+          command,
+          exitCode: run.exitCode,
+          timedOut: run.timedOut,
+          durationMs: run.durationMs,
+          timeoutMs,
+          output
+        }
+      });
+
+      const result = {
+        ok,
+        content: JSON.stringify(
+          {
+            command,
+            cwd: this.config.workspaceRoot,
+            exitCode: run.exitCode,
+            timedOut: run.timedOut,
+            durationMs: run.durationMs,
+            timeoutMs,
+            output
+          },
+          null,
+          2
+        )
+      };
+      this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+      return result;
     }
 
     if (call.name === "test.run") {
@@ -283,6 +539,60 @@ export class BuiltinAgentToolExecutor implements IAgentToolExecutor {
       return result;
     }
 
+    if (call.name === "agent.proactive.questioning") {
+      const enabled = parseBooleanArg(call.args.enabled);
+      if (enabled === undefined) {
+        const result = {
+          ok: false,
+          content:
+            this.config.i18n?.t("tool.error.agent_proactive_questioning_requires_enabled") ??
+            "agent.proactive.questioning requires args.enabled=true|false"
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+
+      const reason = asString(call.args.reason);
+      const now = Date.now();
+      const enabledText = enabled ? "true" : "false";
+      await this.config.memoryManager.addEvent({
+        id: createId("event"),
+        role: "tool",
+        text:
+          this.config.i18n?.t("tool.event.agent_proactive_questioning", {
+            enabled: enabledText,
+            reason: reason ?? ""
+          }) ??
+          `agent proactive questioning\nenabled: ${enabledText}${reason ? `\nreason: ${reason}` : ""}`,
+        timestamp: now,
+        metadata: {
+          tool: "agent.proactive.questioning",
+          questioningEnabled: enabled,
+          enabled,
+          reason,
+          source: "llm",
+          action: "set",
+          updatedAt: now
+        }
+      });
+
+      const result = {
+        ok: true,
+        content: JSON.stringify(
+          {
+            tool: "agent.proactive.questioning",
+            enabled,
+            reason: reason ?? null,
+            updatedAt: now
+          },
+          null,
+          2
+        )
+      };
+      this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+      return result;
+    }
+
     if (call.name === "web.search.record") {
       const query = asString(call.args.query);
       if (!query) {
@@ -393,6 +703,138 @@ export class BuiltinAgentToolExecutor implements IAgentToolExecutor {
       return result;
     }
 
+    if (call.name === "mcp.list_tools") {
+      if (!this.config.mcpClient) {
+        const result = {
+          ok: false,
+          content:
+            this.config.i18n?.t("tool.error.mcp_not_configured") ??
+            "mcp client is not configured"
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      const timeoutMs = clampInt(
+        call.args.timeoutMs,
+        this.config.mcpToolTimeoutMs ?? DEFAULT_MCP_TOOL_TIMEOUT_MS,
+        1_000,
+        10 * 60 * 1000
+      );
+      let tools: Awaited<ReturnType<IMcpToolClient["listTools"]>>;
+      try {
+        tools = await this.config.mcpClient.listTools(timeoutMs);
+      } catch (error) {
+        const result = {
+          ok: false,
+          content: toErrorMessage(error)
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      const result = {
+        ok: true,
+        content: JSON.stringify(
+          {
+            count: tools.length,
+            tools
+          },
+          null,
+          2
+        )
+      };
+      this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+      return result;
+    }
+
+    if (call.name === "mcp.call") {
+      if (!this.config.mcpClient) {
+        const result = {
+          ok: false,
+          content:
+            this.config.i18n?.t("tool.error.mcp_not_configured") ??
+            "mcp client is not configured"
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+      const toolName = asString(call.args.tool) ?? asString(call.args.name);
+      if (!toolName) {
+        const result = {
+          ok: false,
+          content:
+            this.config.i18n?.t("tool.error.mcp_call_requires_tool") ??
+            "mcp.call requires args.tool"
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+
+      const allowlist = this.config.mcpToolsAllowlist ?? [];
+      if (allowlist.length > 0 && !allowlist.includes(toolName)) {
+        const result = {
+          ok: false,
+          content:
+            this.config.i18n?.t("tool.error.mcp_call_tool_not_allowed", { tool: toolName }) ??
+            `mcp.call tool is not allowed: ${toolName}`
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+
+      const timeoutMs = clampInt(
+        call.args.timeoutMs,
+        this.config.mcpToolTimeoutMs ?? DEFAULT_MCP_TOOL_TIMEOUT_MS,
+        1_000,
+        10 * 60 * 1000
+      );
+      const toolArgs = parseArgs(call.args.arguments ?? call.args.args);
+      let response: unknown;
+      try {
+        response = await this.config.mcpClient.callTool(toolName, toolArgs, timeoutMs);
+      } catch (error) {
+        const result = {
+          ok: false,
+          content: toErrorMessage(error)
+        };
+        this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+        return result;
+      }
+
+      const output = truncateText(safeStringify(response), 32 * 1024);
+      const ok = !isMcpErrorResponse(response);
+      await this.config.memoryManager.addEvent({
+        id: createId("event"),
+        role: "tool",
+        text:
+          this.config.i18n?.t("tool.event.mcp_call", {
+            tool: toolName,
+            output
+          }) ??
+          `mcp call\ntool: ${toolName}\n${output}`,
+        timestamp: Date.now(),
+        metadata: {
+          tool: "mcp.call",
+          mcpTool: toolName,
+          arguments: toolArgs,
+          timeoutMs,
+          ok
+        }
+      });
+      const result = {
+        ok,
+        content: JSON.stringify(
+          {
+            tool: toolName,
+            result: response
+          },
+          null,
+          2
+        )
+      };
+      this.config.traceRecorder?.record("tool", "execute.result", { call, result });
+      return result;
+    }
+
     const result = {
       ok: false,
       content:
@@ -400,6 +842,11 @@ export class BuiltinAgentToolExecutor implements IAgentToolExecutor {
     };
     this.config.traceRecorder?.record("tool", "execute.result", { call, result });
     return result;
+  }
+
+  async close(): Promise<void> {
+    if (!this.config.mcpClient) return;
+    await this.config.mcpClient.close();
   }
 
   private async searchAndRecord(query: string, limit: number): Promise<SearchResponse> {
@@ -640,6 +1087,62 @@ async function runNpmScript(
   });
 }
 
+async function runShellCommand(
+  commandLine: string,
+  cwd: string,
+  timeoutMs: number
+): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean; durationMs: number }> {
+  const command = process.platform === "win32" ? "cmd.exe" : "sh";
+  const args = process.platform === "win32" ? ["/d", "/s", "/c", commandLine] : ["-lc", commandLine];
+  const child = spawn(command, args, {
+    cwd,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  let stdout = "";
+  let stderr = "";
+  let timedOut = false;
+  const startedAt = Date.now();
+  let resolved = false;
+  child.stdout.on("data", (chunk: Buffer) => {
+    stdout += chunk.toString("utf8");
+  });
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString("utf8");
+  });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    terminateChildProcess(child);
+  }, timeoutMs);
+
+  return new Promise((resolve) => {
+    const finalize = (exitCode: number): void => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      resolve({
+        exitCode,
+        stdout,
+        stderr,
+        timedOut,
+        durationMs: Date.now() - startedAt
+      });
+    };
+
+    child.once("error", (error) => {
+      const prefix = stderr.length > 0 ? "\n" : "";
+      stderr += `${prefix}[spawn error] ${error.message}`;
+      finalize(1);
+    });
+
+    child.once("close", (code) => {
+      const exitCode = typeof code === "number" ? code : timedOut ? 124 : 1;
+      finalize(exitCode);
+    });
+  });
+}
+
 function terminateChildProcess(child: ChildProcess): void {
   if (process.platform === "win32") {
     if (typeof child.pid === "number" && child.pid > 0) {
@@ -668,6 +1171,13 @@ function asString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function normalizeWriteMode(value: unknown): WorkspaceWriteMode | undefined {
+  const normalized = asString(value)?.toLowerCase();
+  if (!normalized || normalized === "overwrite") return "overwrite";
+  if (normalized === "append") return "append";
+  return undefined;
+}
+
 function asBoolean(value: unknown, fallback: boolean): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -676,6 +1186,16 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
     if (normalized === "false") return false;
   }
   return fallback;
+}
+
+function parseBooleanArg(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1" || normalized === "yes") return true;
+    if (normalized === "false" || normalized === "0" || normalized === "no") return false;
+  }
+  return undefined;
 }
 
 function clampInt(
@@ -692,6 +1212,19 @@ function clampInt(
 function truncateText(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n...[truncated]`;
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function isMcpErrorResponse(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  return (value as Record<string, unknown>).isError === true;
 }
 
 function embedReadText(text: string): number[] {
@@ -795,3 +1328,7 @@ function toErrorMessage(error: unknown): string {
 }
 
 const DEFAULT_TEST_RUN_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_WORKSPACE_WRITE_MAX_BYTES = 256 * 1024;
+const DEFAULT_TERMINAL_RUN_TIMEOUT_MS = 2 * 60 * 1000;
+const DEFAULT_TERMINAL_MAX_OUTPUT_CHARS = 24 * 1024;
+const DEFAULT_MCP_TOOL_TIMEOUT_MS = 60 * 1000;

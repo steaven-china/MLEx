@@ -386,6 +386,204 @@ describe("Web server", () => {
     }
   });
 
+  test("bridgeMode=off disables automatic OpenClaw bridge bypass", async () => {
+    let upstream: Server | undefined;
+    const observedBodies: unknown[] = [];
+    try {
+      upstream = createServer(async (req, res) => {
+        const targetPath = req.url?.split("?")[0] ?? "";
+        if (req.method === "POST" && (targetPath === "/chat/completions" || targetPath === "/v1/chat/completions")) {
+          const chunks: Buffer[] = [];
+          req.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+          await new Promise<void>((resolve) => req.on("end", () => resolve()));
+          observedBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown);
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.end(
+            JSON.stringify({
+              id: "upstream-off-1",
+              model: "upstream-model",
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    content: "should not be reached in bridgeMode=off auto-bridge test"
+                  },
+                  finish_reason: "stop"
+                }
+              ]
+            })
+          );
+          return;
+        }
+        res.statusCode = 404;
+        res.end("not found");
+      });
+      await new Promise<void>((resolve, reject) => {
+        upstream!.once("error", reject);
+        upstream!.listen(0, "127.0.0.1", () => resolve());
+      });
+      const address = upstream.address();
+      if (!address || typeof address === "string") {
+        throw new Error("mock upstream address is invalid");
+      }
+      const upstreamUrl = `http://127.0.0.1:${address.port}/v1`;
+
+      started = await startWebServer({
+        host: "127.0.0.1",
+        port: 0,
+        runtimeOverrides: {
+          service: {
+            provider: "openai-compatible",
+            openaiCompatibleApiKey: "mock-key",
+            openaiCompatibleBaseUrl: upstreamUrl,
+            openaiCompatibleModel: "mock-model"
+          },
+          component: {
+            bridgeMode: "off",
+            openaiCompatBypassAgent: false
+          }
+        }
+      });
+
+      const response = await fetch(`${started.url}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          openclaw: {
+            sidecar: {
+              session_id: "openclaw-off-s1"
+            }
+          },
+          messages: [
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_off_1",
+                  type: "function",
+                  function: {
+                    name: "readonly.read",
+                    arguments: "{\"path\":\"README.md\"}"
+                  }
+                }
+              ]
+            }
+          ]
+        })
+      });
+      expect(response.status).toBe(400);
+      const data = (await response.json()) as {
+        error?: { message?: string; type?: string };
+      };
+      expect(data.error?.type).toBe("invalid_request_error");
+      expect(observedBodies).toHaveLength(0);
+    } finally {
+      if (upstream) {
+        await new Promise<void>((resolve) => upstream!.close(() => resolve()));
+      }
+    }
+  });
+
+  test("auto-bypasses for x-mlex-bridge-hint without OpenClaw payload", async () => {
+    let upstream: Server | undefined;
+    const observedBodies: unknown[] = [];
+    try {
+      upstream = createServer(async (req, res) => {
+        const targetPath = req.url?.split("?")[0] ?? "";
+        if (req.method === "POST" && (targetPath === "/chat/completions" || targetPath === "/v1/chat/completions")) {
+          const chunks: Buffer[] = [];
+          req.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+          await new Promise<void>((resolve) => req.on("end", () => resolve()));
+          observedBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown);
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.end(
+            JSON.stringify({
+              id: "upstream-hint-1",
+              model: "upstream-model",
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    content: "header hint bridge passthrough ok"
+                  },
+                  finish_reason: "stop"
+                }
+              ]
+            })
+          );
+          return;
+        }
+        res.statusCode = 404;
+        res.end("not found");
+      });
+      await new Promise<void>((resolve, reject) => {
+        upstream!.once("error", reject);
+        upstream!.listen(0, "127.0.0.1", () => resolve());
+      });
+      const address = upstream.address();
+      if (!address || typeof address === "string") {
+        throw new Error("mock upstream address is invalid");
+      }
+      const upstreamUrl = `http://127.0.0.1:${address.port}/v1`;
+
+      started = await startWebServer({
+        host: "127.0.0.1",
+        port: 0,
+        runtimeOverrides: {
+          service: {
+            provider: "openai-compatible",
+            openaiCompatibleApiKey: "mock-key",
+            openaiCompatibleBaseUrl: upstreamUrl,
+            openaiCompatibleModel: "mock-model"
+          },
+          component: {
+            bridgeMode: "auto",
+            openaiCompatBypassAgent: false
+          }
+        }
+      });
+
+      const response = await fetch(`${started.url}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-mlex-bridge-hint": "bridge"
+        },
+        body: JSON.stringify({
+          messages: [
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_hint_1",
+                  type: "function",
+                  function: {
+                    name: "readonly.read",
+                    arguments: "{\"path\":\"README.md\"}"
+                  }
+                }
+              ]
+            }
+          ]
+        })
+      });
+      expect(response.status).toBe(200);
+      const data = (await response.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      expect(data.choices?.[0]?.message?.content).toBe("header hint bridge passthrough ok");
+      expect(observedBodies).toHaveLength(1);
+    } finally {
+      if (upstream) {
+        await new Promise<void>((resolve) => upstream!.close(() => resolve()));
+      }
+    }
+  });
+
   test("auto-bypasses MLEX native agent for OpenClaw bridge payload", async () => {
     let upstream: Server | undefined;
     const observedBodies: unknown[] = [];
@@ -445,6 +643,7 @@ describe("Web server", () => {
             openaiCompatibleModel: "mock-model"
           },
           component: {
+            bridgeMode: "auto",
             openaiCompatBypassAgent: false
           }
         }
@@ -480,6 +679,150 @@ describe("Web server", () => {
         await new Promise<void>((resolve) => upstream!.close(() => resolve()));
       }
     }
+  });
+
+  test("bridgeMode=force bypasses native path without OpenClaw hints", async () => {
+    let upstream: Server | undefined;
+    const observedBodies: unknown[] = [];
+    try {
+      upstream = createServer(async (req, res) => {
+        const targetPath = req.url?.split("?")[0] ?? "";
+        if (req.method === "POST" && (targetPath === "/chat/completions" || targetPath === "/v1/chat/completions")) {
+          const chunks: Buffer[] = [];
+          req.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+          await new Promise<void>((resolve) => req.on("end", () => resolve()));
+          observedBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown);
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.end(
+            JSON.stringify({
+              id: "upstream-force-1",
+              model: "upstream-model",
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    content: "force passthrough ok"
+                  },
+                  finish_reason: "stop"
+                }
+              ]
+            })
+          );
+          return;
+        }
+        res.statusCode = 404;
+        res.end("not found");
+      });
+      await new Promise<void>((resolve, reject) => {
+        upstream!.once("error", reject);
+        upstream!.listen(0, "127.0.0.1", () => resolve());
+      });
+      const address = upstream.address();
+      if (!address || typeof address === "string") {
+        throw new Error("mock upstream address is invalid");
+      }
+      const upstreamUrl = `http://127.0.0.1:${address.port}/v1`;
+
+      started = await startWebServer({
+        host: "127.0.0.1",
+        port: 0,
+        runtimeOverrides: {
+          service: {
+            provider: "openai-compatible",
+            openaiCompatibleApiKey: "mock-key",
+            openaiCompatibleBaseUrl: upstreamUrl,
+            openaiCompatibleModel: "mock-model"
+          },
+          component: {
+            bridgeMode: "force",
+            openaiCompatBypassAgent: false
+          }
+        }
+      });
+
+      const response = await fetch(`${started.url}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: "force-bypass-s1",
+          messages: [{ role: "user", content: "route with force mode" }]
+        })
+      });
+      expect(response.status).toBe(200);
+      const data = (await response.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      expect(data.choices?.[0]?.message?.content).toBe("force passthrough ok");
+      expect(observedBodies).toHaveLength(1);
+    } finally {
+      if (upstream) {
+        await new Promise<void>((resolve) => upstream!.close(() => resolve()));
+      }
+    }
+  });
+
+  test("bridgeMode=force returns explicit error when passthrough target is unavailable", async () => {
+    started = await startWebServer({
+      host: "127.0.0.1",
+      port: 0,
+      runtimeOverrides: {
+        service: {
+          provider: "rule-based"
+        },
+        component: {
+          bridgeMode: "force",
+          openaiCompatBypassAgent: false
+        }
+      }
+    });
+
+    const response = await fetch(`${started.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "force mode requires passthrough target" }]
+      })
+    });
+    expect(response.status).toBe(502);
+    const data = (await response.json()) as {
+      error?: { message?: string; type?: string; code?: string };
+    };
+    expect(data.error?.type).toBe("bridge_error");
+    expect(data.error?.code).toBe("bridge_passthrough_unavailable");
+  });
+
+  test("bridge passthrough failure returns explicit bridge error", async () => {
+    started = await startWebServer({
+      host: "127.0.0.1",
+      port: 0,
+      runtimeOverrides: {
+        service: {
+          provider: "openai-compatible",
+          openaiCompatibleApiKey: "mock-key",
+          openaiCompatibleBaseUrl: "http://127.0.0.1:1/v1",
+          openaiCompatibleModel: "mock-model"
+        },
+        component: {
+          bridgeMode: "force",
+          openaiCompatBypassAgent: false
+        }
+      }
+    });
+
+    const response = await fetch(`${started.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "force mode passthrough should fail clearly" }]
+      })
+    });
+    expect(response.status).toBe(502);
+    const data = (await response.json()) as {
+      error?: { message?: string; type?: string; code?: string };
+    };
+    expect(data.error?.type).toBe("bridge_error");
+    expect(data.error?.code).toBe("bridge_passthrough_failed");
   });
 
   test("bridge passthrough preserves tool_calls payload without requiring user message", async () => {
@@ -671,6 +1014,19 @@ describe("Web server", () => {
         })
       });
       expect(completionResponse.status).toBe(200);
+
+      const tracesResponse = await fetch(`${started.url}/api/debug/traces?limit=200`);
+      expect(tracesResponse.status).toBe(200);
+      const tracesData = (await tracesResponse.json()) as {
+        entries?: Array<{ category?: string; event?: string }>;
+      };
+      const bridgeEvents = (tracesData.entries ?? [])
+        .filter((entry) => entry.category === "web.bridge")
+        .map((entry) => entry.event);
+      expect(bridgeEvents).toContain("detected");
+      expect(bridgeEvents).toContain("forward.start");
+      expect(bridgeEvents).toContain("forward.ok");
+      expect(bridgeEvents).toContain("relation.projected");
 
       const debugResponse = await fetch(
         `${started.url}/api/debug/database?sessionId=openclaw-rel-s1`

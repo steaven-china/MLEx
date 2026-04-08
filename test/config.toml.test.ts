@@ -409,6 +409,56 @@ describe("loadConfig with ~/.mlex/config.toml support", () => {
     expect(config.component.sqliteWorkerEnabled).toBe(true);
   });
 
+  test("loads tool and mcp config from toml file", async () => {
+    const filePath = await makeTempPath();
+    await writeFile(
+      filePath,
+      [
+        "[component]",
+        'bridgeMode = "force"',
+        "openaiCompatBypassAgent = true",
+        "toolFileWriteEnabled = true",
+        "toolFileWriteMaxBytes = 131072",
+        "toolTerminalEnabled = true",
+        "toolTerminalTimeoutMs = 90000",
+        "toolTerminalMaxOutputChars = 16384",
+        "mcpEnabled = true",
+        'mcpCommand = "node"',
+        'mcpArgs = ["mock-mcp.js"]',
+        'mcpWorkdir = "."',
+        "mcpInitTimeoutMs = 18000",
+        "mcpToolTimeoutMs = 70000",
+        'mcpToolsAllowlist = ["search_docs", "read_ticket"]'
+      ].join("\n"),
+      "utf8"
+    );
+
+    const config = loadConfig({}, { userTomlPath: filePath });
+    expect(config.component.bridgeMode).toBe("force");
+    expect(config.component.openaiCompatBypassAgent).toBe(true);
+    expect(config.component.toolFileWriteEnabled).toBe(true);
+    expect(config.component.toolFileWriteMaxBytes).toBe(131072);
+    expect(config.component.toolTerminalEnabled).toBe(true);
+    expect(config.component.toolTerminalTimeoutMs).toBe(90000);
+    expect(config.component.toolTerminalMaxOutputChars).toBe(16384);
+    expect(config.component.mcpEnabled).toBe(true);
+    expect(config.component.mcpCommand).toBe("node");
+    expect(config.component.mcpArgs).toEqual(["mock-mcp.js"]);
+    expect(config.component.mcpWorkdir).toBe(".");
+    expect(config.component.mcpInitTimeoutMs).toBe(18000);
+    expect(config.component.mcpToolTimeoutMs).toBe(70000);
+    expect(config.component.mcpToolsAllowlist).toEqual(["search_docs", "read_ticket"]);
+  });
+
+  test("throws on invalid bridgeMode value", async () => {
+    const filePath = await makeTempPath();
+    await writeFile(filePath, ["[component]", 'bridgeMode = "unknown-mode"'].join("\n"), "utf8");
+
+    expect(() => loadConfig({}, { userTomlPath: filePath })).toThrowError(
+      /Invalid component\.bridgeMode/
+    );
+  });
+
   test("throws on invalid toml syntax", async () => {
     const filePath = await makeTempPath();
     await writeFile(filePath, "[service\nprovider = \"openai\"", "utf8");

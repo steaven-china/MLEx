@@ -1,5 +1,5 @@
 import { Agent } from "./agent/Agent.js";
-import { BuiltinAgentToolExecutor } from "./agent/AgentToolExecutor.js";
+import { BuiltinAgentToolExecutor, type IAgentToolExecutor } from "./agent/AgentToolExecutor.js";
 import { buildProvider } from "./agent/providerFactory.js";
 import type { AppConfig, DeepPartial } from "./config.js";
 import { loadConfig } from "./config.js";
@@ -75,6 +75,7 @@ import { SearchIngestScheduler } from "./search/SearchIngestScheduler.js";
 import { ProactiveDialoguePlanner } from "./proactive/ProactiveDialoguePlanner.js";
 import { ProactiveActuator } from "./proactive/ProactiveActuator.js";
 import { ProactiveTimerScheduler } from "./proactive/ProactiveTimerScheduler.js";
+import { StdioMcpClient, type IMcpToolClient } from "./mcp/StdioMcpClient.js";
 
 type Factory<T> = () => T;
 
@@ -97,6 +98,11 @@ export class Container {
     const instance = factory();
     this.instances.set(name, instance);
     return instance as T;
+  }
+
+  getIfResolved<T>(name: string): T | undefined {
+    if (!this.instances.has(name)) return undefined;
+    return this.instances.get(name) as T;
   }
 }
 
@@ -204,7 +210,12 @@ export function createRuntime(
 
     await scheduler.stop();
     await proactiveTimerScheduler.stop();
+    await memoryManager.sealCurrentBlock();
     await memoryManager.flushAsyncRelations();
+    const toolExecutor = container.getIfResolved<IAgentToolExecutor>("toolExecutor");
+    if (toolExecutor?.close) {
+      await toolExecutor.close();
+    }
     if (sqliteWorkerClient) {
       await sqliteWorkerClient.close();
       sqliteWorkerClient = undefined;
@@ -454,7 +465,11 @@ function registerCoreDependencies(input: {
       endpoint: config.component.searchEndpoint,
       apiKey: config.component.searchApiKey,
       providerName: config.component.searchProvider,
-      timeoutMs: Math.max(1000, config.component.searchTimeoutMs)
+      timeoutMs: Math.max(1000, config.component.searchTimeoutMs),
+      apiFlavor: config.component.searchApiFlavor,
+      apiFreshness: config.component.searchApiFreshness,
+      apiSummaryEnabled: config.component.searchApiSummaryEnabled,
+      apiMarket: config.component.searchApiMarket
     });
   });
   container.register("webPageFetcher", () => {
@@ -529,6 +544,20 @@ function registerRuntimeDependencies(input: {
     envTagsTemplateVars
   } = input;
 
+  container.register("mcpClient", () => {
+    if (!config.component.mcpEnabled) return undefined;
+    const command = config.component.mcpCommand?.trim();
+    if (!command) return undefined;
+    return new StdioMcpClient({
+      command,
+      args: config.component.mcpArgs,
+      cwd: config.component.mcpWorkdir,
+      initTimeoutMs: config.component.mcpInitTimeoutMs,
+      clientName: "mlex-agent",
+      clientVersion: "0.1.0"
+    });
+  });
+
   container.register("toolExecutor", () => {
     return new BuiltinAgentToolExecutor({
       workspaceRoot: options.workspaceRoot ?? process.cwd(),
@@ -540,6 +569,14 @@ function registerRuntimeDependencies(input: {
       webPageFetcher: container.resolve("webPageFetcher"),
       searchAugmentMode: config.manager.searchAugmentMode,
       searchTopK: config.manager.searchTopK,
+      fileWriteEnabled: config.component.toolFileWriteEnabled,
+      fileWriteMaxBytes: config.component.toolFileWriteMaxBytes,
+      terminalEnabled: config.component.toolTerminalEnabled,
+      terminalTimeoutMs: config.component.toolTerminalTimeoutMs,
+      terminalMaxOutputChars: config.component.toolTerminalMaxOutputChars,
+      mcpClient: container.resolve<IMcpToolClient | undefined>("mcpClient"),
+      mcpToolTimeoutMs: config.component.mcpToolTimeoutMs,
+      mcpToolsAllowlist: config.component.mcpToolsAllowlist,
       i18n: container.resolve("i18n")
     });
   });

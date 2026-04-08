@@ -99,6 +99,15 @@ export interface Context {
   proactiveSignal?: ProactiveSignal;
 }
 
+export interface ConversationStats {
+  totalEvents: number;
+  userEvents: number;
+  assistantEvents: number;
+  toolEvents: number;
+  systemEvents: number;
+  dialogueTurns: number;
+}
+
 export type TraverseDirection = "incoming" | "outgoing" | "both";
 
 export interface DirectionalIntent {

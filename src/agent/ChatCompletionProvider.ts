@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   ILLMProvider,
   LlmGenerateOptions,
+  LlmUsage,
   TokenCallback
 } from "./LLMProvider.js";
 
@@ -38,6 +39,7 @@ interface ChatCompletionResponse {
 }
 
 interface ChatCompletionChunk {
+  usage?: unknown;
   choices?: Array<{
     delta?: {
       content?: string;
@@ -63,6 +65,7 @@ export class ChatCompletionProvider implements ILLMProvider {
   private readonly emptyResponseMessage: string;
   private readonly retryPrompt: string;
   private readonly assistantReasoningByContent = new Map<string, string>();
+  private lastUsage: LlmUsage | undefined;
 
   constructor(
     private readonly config: ChatCompletionProviderConfig,
@@ -78,6 +81,7 @@ export class ChatCompletionProvider implements ILLMProvider {
   }
 
   async generate(messages: ChatMessage[], options?: LlmGenerateOptions): Promise<string> {
+    this.lastUsage = undefined;
     this.trace("request.start", {
       stream: false,
       messages
@@ -93,6 +97,7 @@ export class ChatCompletionProvider implements ILLMProvider {
     }
 
     const data = (await response.json()) as ChatCompletionResponse;
+    this.lastUsage = parseLlmUsage(data.usage);
     const message = data.choices?.[0]?.message;
     const content = extractMessageText(message);
     const reasoning = extractMessageReasoning(message);
@@ -122,6 +127,7 @@ export class ChatCompletionProvider implements ILLMProvider {
     onToken: TokenCallback,
     options?: LlmGenerateOptions
   ): Promise<string> {
+    this.lastUsage = undefined;
     this.trace("request.start", {
       stream: true,
       messages
@@ -146,33 +152,39 @@ export class ChatCompletionProvider implements ILLMProvider {
     let buffer = "";
     let fullText = "";
     let fullReasoning = "";
+    let usage: LlmUsage | undefined;
 
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const result = consumeBufferedEvents(buffer, fullText, fullReasoning, onToken);
+      const result = consumeBufferedEvents(buffer, fullText, fullReasoning, usage, onToken);
       if (result.done) {
         fullText = result.fullText;
         fullReasoning = result.fullReasoning;
+        usage = result.usage;
         buffer = result.buffer;
         break;
       }
       buffer = result.buffer;
       fullText = result.fullText;
       fullReasoning = result.fullReasoning;
+      usage = result.usage;
     }
 
     if (buffer.length > 0) {
-      const result = consumeSingleEvent(buffer, fullText, fullReasoning, onToken);
+      const result = consumeSingleEvent(buffer, fullText, fullReasoning, usage, onToken);
       fullText = result.fullText;
       fullReasoning = result.fullReasoning;
+      usage = result.usage;
     }
+    this.lastUsage = usage;
 
     this.trace("response.parsed", {
       stream: true,
       content: fullText,
-      reasoning: fullReasoning
+      reasoning: fullReasoning,
+      usage: usage ?? null
     });
 
     if (fullText.trim().length > 0) {
@@ -191,6 +203,10 @@ export class ChatCompletionProvider implements ILLMProvider {
     }
 
     return this.emptyResponseMessage;
+  }
+
+  getLastUsage(): LlmUsage | undefined {
+    return this.lastUsage;
   }
 
   private request(messages: ChatMessage[], stream: boolean, signal?: AbortSignal): Promise<Response> {
@@ -252,6 +268,7 @@ export class ChatCompletionProvider implements ILLMProvider {
         return undefined;
       }
       const retryData = (await retryResponse.json()) as ChatCompletionResponse;
+      this.lastUsage = parseLlmUsage(retryData.usage) ?? this.lastUsage;
       const retryMessage = retryData.choices?.[0]?.message;
       const text = extractMessageText(retryMessage);
       const reasoning = extractMessageReasoning(retryMessage);
@@ -313,24 +330,28 @@ function consumeBufferedEvents(
   buffer: string,
   fullText: string,
   fullReasoning: string,
+  usage: LlmUsage | undefined,
   onToken: TokenCallback
-): { done: boolean; buffer: string; fullText: string; fullReasoning: string } {
+): { done: boolean; buffer: string; fullText: string; fullReasoning: string; usage: LlmUsage | undefined } {
   let workingBuffer = buffer;
   let outputText = fullText;
   let outputReasoning = fullReasoning;
+  let outputUsage = usage;
   let boundary = workingBuffer.indexOf("\n\n");
   while (boundary !== -1) {
     const event = workingBuffer.slice(0, boundary);
     workingBuffer = workingBuffer.slice(boundary + 2);
-    const eventResult = consumeSingleEvent(event, outputText, outputReasoning, onToken);
+    const eventResult = consumeSingleEvent(event, outputText, outputReasoning, outputUsage, onToken);
     outputText = eventResult.fullText;
     outputReasoning = eventResult.fullReasoning;
+    outputUsage = eventResult.usage;
     if (eventResult.done) {
       return {
         done: true,
         buffer: "",
         fullText: outputText,
-        fullReasoning: outputReasoning
+        fullReasoning: outputReasoning,
+        usage: outputUsage
       };
     }
     boundary = workingBuffer.indexOf("\n\n");
@@ -340,7 +361,8 @@ function consumeBufferedEvents(
     done: false,
     buffer: workingBuffer,
     fullText: outputText,
-    fullReasoning: outputReasoning
+    fullReasoning: outputReasoning,
+    usage: outputUsage
   };
 }
 
@@ -348,10 +370,12 @@ function consumeSingleEvent(
   event: string,
   fullText: string,
   fullReasoning: string,
+  usage: LlmUsage | undefined,
   onToken: TokenCallback
-): { done: boolean; fullText: string; fullReasoning: string } {
+): { done: boolean; fullText: string; fullReasoning: string; usage: LlmUsage | undefined } {
   let output = fullText;
   let reasoning = fullReasoning;
+  let outputUsage = usage;
   for (const line of event.split("\n")) {
     if (!line.startsWith("data:")) continue;
     const payload = line.slice(5).trim();
@@ -360,11 +384,16 @@ function consumeSingleEvent(
       return {
         done: true,
         fullText: output,
-        fullReasoning: reasoning
+        fullReasoning: reasoning,
+        usage: outputUsage
       };
     }
 
     const parsed = safeJsonParse<ChatCompletionChunk>(payload);
+    const chunkUsage = parseLlmUsage(parsed?.usage);
+    if (chunkUsage) {
+      outputUsage = chunkUsage;
+    }
     const token = parsed?.choices?.[0]?.delta?.content;
     const reasoningToken = parsed?.choices?.[0]?.delta?.reasoning_content;
     if (reasoningToken) {
@@ -378,7 +407,8 @@ function consumeSingleEvent(
   return {
     done: false,
     fullText: output,
-    fullReasoning: reasoning
+    fullReasoning: reasoning,
+    usage: outputUsage
   };
 }
 
@@ -414,6 +444,39 @@ function extractMessageReasoning(message: ChatCompletionMessage | undefined): st
   if (typeof message.reasoning_content !== "string") return undefined;
   const trimmed = message.reasoning_content.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseLlmUsage(input: unknown): LlmUsage | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const usage = input as Record<string, unknown>;
+  const promptTokens = toFiniteInt(usage.prompt_tokens ?? usage.promptTokens);
+  const completionTokens = toFiniteInt(usage.completion_tokens ?? usage.completionTokens);
+  const totalTokens = toFiniteInt(usage.total_tokens ?? usage.totalTokens);
+  if (promptTokens === undefined && completionTokens === undefined && totalTokens === undefined) {
+    return undefined;
+  }
+
+  const resolvedPrompt = promptTokens ?? 0;
+  const resolvedCompletion = completionTokens ?? 0;
+  const resolvedTotal = totalTokens ?? resolvedPrompt + resolvedCompletion;
+  return {
+    promptTokens: resolvedPrompt,
+    completionTokens: resolvedCompletion,
+    totalTokens: resolvedTotal
+  };
+}
+
+function toFiniteInt(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.floor(parsed));
+    }
+  }
+  return undefined;
 }
 
 const MAX_REASONING_CACHE_SIZE = 500;

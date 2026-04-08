@@ -9,6 +9,12 @@ export interface LlmGenerateOptions {
   signal?: AbortSignal;
 }
 
+export interface LlmUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface ILLMProvider {
   generate(messages: ChatMessage[], options?: LlmGenerateOptions): Promise<string>;
   generateStream?(
@@ -16,4 +22,5 @@ export interface ILLMProvider {
     onToken: TokenCallback,
     options?: LlmGenerateOptions
   ): Promise<string>;
+  getLastUsage?(): LlmUsage | undefined;
 }

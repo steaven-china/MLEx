@@ -69,6 +69,36 @@ describe("ChatCompletionProvider", () => {
     expect(text).toBe("line one\nline two");
   });
 
+  test("tracks usage from non-stream response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          usage: {
+            prompt_tokens: 111,
+            completion_tokens: 22,
+            total_tokens: 133
+          },
+          choices: [{ message: { content: "ok" } }]
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = new ChatCompletionProvider(
+      { apiKey: "k", model: "m" },
+      { providerName: "Test", defaultBaseUrl: "https://example.com" }
+    );
+
+    const text = await provider.generate([{ role: "user", content: "hello" }]);
+    expect(text).toBe("ok");
+    expect(provider.getLastUsage?.()).toEqual({
+      promptTokens: 111,
+      completionTokens: 22,
+      totalTokens: 133
+    });
+  });
+
   test("stream falls back to retry when token stream is empty", async () => {
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
@@ -107,6 +137,49 @@ describe("ChatCompletionProvider", () => {
     expect(text).toBe("stream fallback text");
     expect(collected).toBe("stream fallback text");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("tracks usage from stream usage chunk", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            [
+              'data: {"choices":[{"delta":{"content":"hello"}}]}',
+              "",
+              'data: {"choices":[],"usage":{"prompt_tokens":77,"completion_tokens":11,"total_tokens":88}}',
+              "",
+              "data: [DONE]",
+              "",
+              ""
+            ].join("\n")
+          )
+        );
+        controller.close();
+      }
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response(stream, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = new ChatCompletionProvider(
+      { apiKey: "k", model: "m" },
+      { providerName: "Test", defaultBaseUrl: "https://example.com" }
+    );
+
+    let collected = "";
+    const text = await provider.generateStream([{ role: "user", content: "hello" }], (token) => {
+      collected += token;
+    });
+
+    expect(text).toBe("hello");
+    expect(collected).toBe("hello");
+    expect(provider.getLastUsage?.()).toEqual({
+      promptTokens: 77,
+      completionTokens: 11,
+      totalTokens: 88
+    });
   });
 
   test("uses custom request path, query params, extra headers, and omits model when configured", async () => {

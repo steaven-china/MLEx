@@ -3,6 +3,7 @@ export * from "./config.js";
 export * from "./config/tagsToml.js";
 export * from "./container.js";
 export * from "./files/ReadonlyFileService.js";
+export * from "./files/WorkspaceFileService.js";
 export * from "./debug/DebugTraceRecorder.js";
 export * from "./tui/chatCommand.js";
 export * from "./tui/MlexTuiApp.js";
@@ -95,4 +96,5 @@ export * from "./memory/vector/BlockStoreVectorStore.js";
 export * from "./memory/vector/AnnCosineIndex.js";
 export * from "./memory/vector/LanceVectorStore.js";
 
+export * from "./mcp/StdioMcpClient.js";
 export * from "./web/server.js";
